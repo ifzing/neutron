@@ -11,8 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Kedar Kulkarni, One Convergence, Inc.
 
 """Library to talk to NVSD controller."""
 
@@ -23,7 +21,7 @@ from oslo.config import cfg
 import requests
 from six.moves.urllib import parse
 
-from neutron.openstack.common import jsonutils as json
+from neutron.openstack.common import jsonutils
 from neutron.openstack.common import log as logging
 import neutron.plugins.oneconvergence.lib.exception as exception
 
@@ -53,8 +51,7 @@ class NVSDController(object):
 
         self.auth_token = None
 
-    def do_request(self, method, url=None, headers=None, data=None,
-                   timeout=10):
+    def do_request(self, method, url=None, headers=None, data=None):
         response = self.pool.request(method, url=url,
                                      headers=headers, data=data,
                                      timeout=self._request_timeout)
@@ -68,7 +65,8 @@ class NVSDController(object):
         login_url = parse.urljoin(self.api_url,
                                   "/pluginhandler/ocplugin/authmgmt/login")
 
-        data = json.dumps({"user_name": self._user, "passwd": self._password})
+        data = jsonutils.dumps({"user_name": self._user,
+                                "passwd": self._password})
 
         attempts = 0
 
@@ -84,8 +82,7 @@ class NVSDController(object):
                 raise exception.ServerException(reason=msg)
             try:
                 response = self.do_request("POST", url=login_url,
-                                           headers=headers, data=data,
-                                           timeout=self._request_timeout)
+                                           headers=headers, data=data)
                 break
             except Exception as e:
                 LOG.error(_("Login Failed: %s"), e)
@@ -98,7 +95,7 @@ class NVSDController(object):
             LOG.debug(_("Login Successful %(uri)s "
                         "%(status)s"), {'uri': self.api_url,
                                         'status': response.status_code})
-            self.auth_token = json.loads(response.content)["session_uuid"]
+            self.auth_token = jsonutils.loads(response.content)["session_uuid"]
             LOG.debug(_("AuthToken = %s"), self.auth_token)
         else:
             LOG.error(_("login failed"))
@@ -123,8 +120,7 @@ class NVSDController(object):
 
         try:
             response = self.do_request(method, url=url,
-                                       headers=headers, data=body,
-                                       timeout=self._request_timeout)
+                                       headers=headers, data=body)
 
             LOG.debug(_("request: %(method)s %(uri)s successful"),
                       {'method': method, 'uri': self.api_url + uri})

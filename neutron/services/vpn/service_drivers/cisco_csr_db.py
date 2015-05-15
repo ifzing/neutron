@@ -11,9 +11,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Paul Michali, Cisco Systems, Inc.
 
+from oslo.db import exception as db_exc
 import sqlalchemy as sa
 from sqlalchemy.orm import exc as sql_exc
 
@@ -21,7 +20,6 @@ from neutron.common import exceptions
 from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.db.vpn import vpn_db
-from neutron.openstack.common.db import exception as db_exc
 from neutron.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)

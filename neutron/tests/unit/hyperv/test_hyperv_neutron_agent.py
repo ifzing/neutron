@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 Cloudbase Solutions SRL
 # Copyright 2013 Pedro Navarro Perez
 # All Rights Reserved.
@@ -23,8 +21,11 @@ Unit tests for Windows Hyper-V virtual switch neutron driver
 import mock
 from oslo.config import cfg
 
+from neutron.plugins.common import constants as p_const
 from neutron.plugins.hyperv.agent import hyperv_neutron_agent
+from neutron.plugins.hyperv.agent import utils
 from neutron.plugins.hyperv.agent import utilsfactory
+from neutron.plugins.hyperv.common import constants
 from neutron.tests import base
 
 cfg.CONF.import_opt('enable_metrics_collection',
@@ -38,9 +39,6 @@ class TestHyperVNeutronAgent(base.BaseTestCase):
 
     def setUp(self):
         super(TestHyperVNeutronAgent, self).setUp()
-        # Avoid rpc initialization for unit tests
-        cfg.CONF.set_override('rpc_backend',
-                              'neutron.openstack.common.rpc.impl_fake')
 
         utilsfactory._get_windows_version = mock.MagicMock(
             return_value='6.2.0')
@@ -54,13 +52,15 @@ class TestHyperVNeutronAgent(base.BaseTestCase):
 
         mock.patch('neutron.openstack.common.loopingcall.'
                    'FixedIntervalLoopingCall',
-                   new=MockFixedIntervalLoopingCall)
+                   new=MockFixedIntervalLoopingCall).start()
         cfg.CONF.set_default('firewall_driver',
                              'neutron.agent.firewall.NoopFirewallDriver',
                              group='SECURITYGROUP')
         self.agent = hyperv_neutron_agent.HyperVNeutronAgent()
+        self.agent._utils = mock.MagicMock()
         self.agent.plugin_rpc = mock.Mock()
         self.agent.sec_groups_agent = mock.MagicMock()
+        self.agent.sg_plugin_rpc = mock.Mock()
         self.agent.context = mock.Mock()
         self.agent.agent_id = mock.Mock()
 
@@ -72,6 +72,11 @@ class TestHyperVNeutronAgent(base.BaseTestCase):
             'agent_type': 'HyperV agent',
             'start_flag': True}
         self.agent_state = fake_agent_state
+
+    def test_use_enhanced_rpc(self):
+        self.agent.sec_groups_agent = hyperv_neutron_agent.HyperVSecurityAgent(
+            self.agent.context, self.agent.sg_plugin_rpc)
+        self.assertFalse(self.agent.sec_groups_agent.use_enhanced_rpc)
 
     def test_port_bound_enable_metrics(self):
         cfg.CONF.set_override('enable_metrics_collection', True, 'AGENT')
@@ -147,7 +152,7 @@ class TestHyperVNeutronAgent(base.BaseTestCase):
         self.assertNotIn(self._FAKE_PORT_ID, self.agent._port_metric_retries)
 
     def test_treat_devices_added_returns_true_for_missing_device(self):
-        attrs = {'get_device_details.side_effect': Exception()}
+        attrs = {'get_devices_details_list.side_effect': Exception()}
         self.agent.plugin_rpc.configure_mock(**attrs)
         self.assertTrue(self.agent._treat_devices_added([{}]))
 
@@ -158,7 +163,7 @@ class TestHyperVNeutronAgent(base.BaseTestCase):
         :param func_name: the function that should be called
         :returns: whether the named function was called
         """
-        attrs = {'get_device_details.return_value': details}
+        attrs = {'get_devices_details_list.return_value': [details]}
         self.agent.plugin_rpc.configure_mock(**attrs)
         with mock.patch.object(self.agent, func_name) as func:
             self.assertFalse(self.agent._treat_devices_added([{}]))
@@ -212,15 +217,61 @@ class TestHyperVNeutronAgent(base.BaseTestCase):
     def test_main(self):
         with mock.patch.object(hyperv_neutron_agent,
                                'HyperVNeutronAgent') as plugin:
-            with mock.patch.object(hyperv_neutron_agent.cfg, 'CONF') as cfg:
-                with mock.patch('eventlet.monkey_patch') as eventlet:
-                    with mock.patch.object(
-                        hyperv_neutron_agent,
-                        'logging_config') as logging_config:
+            with mock.patch.object(hyperv_neutron_agent,
+                                   'common_config') as common_config:
+                hyperv_neutron_agent.main()
 
-                        hyperv_neutron_agent.main()
+                self.assertTrue(common_config.init.called)
+                self.assertTrue(common_config.setup_logging.called)
+                plugin.assert_has_calls([mock.call().daemon_loop()])
 
-                        self.assertTrue(cfg.called)
-                        self.assertTrue(eventlet.called)
-                        self.assertTrue(logging_config.setup_logging.called)
-                        plugin.assert_has_calls([mock.call().daemon_loop()])
+    @mock.patch.object(hyperv_neutron_agent.HyperVNeutronAgent,
+                       "_get_vswitch_name")
+    def test_provision_network_exception(self, mock_get_vswitch_name):
+        self.assertRaises(utils.HyperVException, self.agent._provision_network,
+                          mock.sentinel.FAKE_PORT_ID,
+                          mock.sentinel.FAKE_NET_UUID,
+                          mock.sentinel.FAKE_NETWORK_TYPE,
+                          mock.sentinel.FAKE_PHYSICAL_NETWORK,
+                          mock.sentinel.FAKE_SEGMENTATION_ID)
+        mock_get_vswitch_name.assert_called_once_with(
+            mock.sentinel.FAKE_NETWORK_TYPE,
+            mock.sentinel.FAKE_PHYSICAL_NETWORK)
+
+    @mock.patch.object(hyperv_neutron_agent.HyperVNeutronAgent,
+                       "_get_vswitch_name")
+    def test_provision_network_vlan(self, mock_get_vswitch_name):
+        vswitch_name = mock_get_vswitch_name.return_value
+        self.agent._provision_network(mock.sentinel.FAKE_PORT_ID,
+                                      mock.sentinel.FAKE_NET_UUID,
+                                      p_const.TYPE_VLAN,
+                                      mock.sentinel.FAKE_PHYSICAL_NETWORK,
+                                      mock.sentinel.FAKE_SEGMENTATION_ID)
+        mock_get_vswitch_name.assert_called_once_with(p_const.TYPE_VLAN,
+            mock.sentinel.FAKE_PHYSICAL_NETWORK)
+        set_switch = self.agent._utils.set_switch_external_port_trunk_vlan
+        set_switch.assert_called_once_with(vswitch_name,
+                                           mock.sentinel.FAKE_SEGMENTATION_ID,
+                                           constants.TRUNK_ENDPOINT_MODE)
+
+    @mock.patch.object(hyperv_neutron_agent.HyperVNeutronAgent,
+                       "_get_vswitch_name")
+    def test_provision_network_flat(self, mock_get_vswitch_name):
+        self.agent._provision_network(mock.sentinel.FAKE_PORT_ID,
+                                      mock.sentinel.FAKE_NET_UUID,
+                                      p_const.TYPE_FLAT,
+                                      mock.sentinel.FAKE_PHYSICAL_NETWORK,
+                                      mock.sentinel.FAKE_SEGMENTATION_ID)
+        mock_get_vswitch_name.assert_called_once_with(p_const.TYPE_FLAT,
+            mock.sentinel.FAKE_PHYSICAL_NETWORK)
+
+    @mock.patch.object(hyperv_neutron_agent.HyperVNeutronAgent,
+                       "_get_vswitch_name")
+    def test_provision_network_local(self, mock_get_vswitch_name):
+        self.agent._provision_network(mock.sentinel.FAKE_PORT_ID,
+                                      mock.sentinel.FAKE_NET_UUID,
+                                      p_const.TYPE_LOCAL,
+                                      mock.sentinel.FAKE_PHYSICAL_NETWORK,
+                                      mock.sentinel.FAKE_SEGMENTATION_ID)
+        mock_get_vswitch_name.assert_called_once_with(p_const.TYPE_LOCAL,
+            mock.sentinel.FAKE_PHYSICAL_NETWORK)

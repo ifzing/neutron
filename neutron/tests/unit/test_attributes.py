@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 # All Rights Reserved.
 #
@@ -16,6 +14,8 @@
 #    under the License.
 
 import testtools
+
+import mock
 
 from neutron.api.v2 import attributes
 from neutron.common import exceptions as n_exc
@@ -206,6 +206,12 @@ class TestAttributes(base.BaseTestCase):
         msg = attributes._validate_ip_address(ip_addr)
         self.assertEqual(msg, "'%s' is not a valid IP address" % ip_addr)
 
+        # Depending on platform to run UTs, this case might or might not be
+        # an equivalent to test_validate_ip_address_bsd.
+        ip_addr = '1' * 59
+        msg = attributes._validate_ip_address(ip_addr)
+        self.assertEqual("'%s' is not a valid IP address" % ip_addr, msg)
+
         ip_addr = '1.1.1.1 has whitespace'
         msg = attributes._validate_ip_address(ip_addr)
         self.assertEqual(msg, "'%s' is not a valid IP address" % ip_addr)
@@ -217,6 +223,18 @@ class TestAttributes(base.BaseTestCase):
         ip_addr = '111.1.1.1\nwhitespace'
         msg = attributes._validate_ip_address(ip_addr)
         self.assertEqual(msg, "'%s' is not a valid IP address" % ip_addr)
+
+    def test_validate_ip_address_bsd(self):
+        # NOTE(yamamoto):  On NetBSD and OS X, netaddr.IPAddress() accepts
+        # '1' * 59 as a valid address.  The behaviour is inherited from
+        # libc behaviour there.  This test ensures that our validator reject
+        # such addresses on such platforms by mocking netaddr to emulate
+        # the behaviour.
+        ip_addr = '1' * 59
+        with mock.patch('netaddr.IPAddress') as ip_address_cls:
+            msg = attributes._validate_ip_address(ip_addr)
+        ip_address_cls.assert_called_once_with(ip_addr)
+        self.assertEqual("'%s' is not a valid IP address" % ip_addr, msg)
 
     def test_validate_ip_pools(self):
         pools = [[{'end': '10.0.0.254'}],
@@ -281,7 +299,6 @@ class TestAttributes(base.BaseTestCase):
     def test_validate_nameservers(self):
         ns_pools = [['1.1.1.2', '1.1.1.2'],
                     ['www.hostname.com', 'www.hostname.com'],
-                    ['77.hostname.com'],
                     ['1000.0.0.1'],
                     None]
 
@@ -293,6 +310,8 @@ class TestAttributes(base.BaseTestCase):
                     ['www.hostname.com'],
                     ['www.great.marathons.to.travel'],
                     ['valid'],
+                    ['77.hostname.com'],
+                    ['1' * 59],
                     ['www.internal.hostname.com']]
 
         for ns in ns_pools:
@@ -343,13 +362,19 @@ class TestAttributes(base.BaseTestCase):
         self.assertEqual(msg, "'%s' is not a valid IP address" % ip_addr)
 
     def test_hostname_pattern(self):
-        data = '@openstack'
-        msg = attributes._validate_regex(data, attributes.HOSTNAME_PATTERN)
-        self.assertIsNotNone(msg)
+        bad_values = ['@openstack', 'ffff.abcdefg' * 26, 'f' * 80, '-hello',
+                      'goodbye-', 'example..org']
+        for data in bad_values:
+            msg = attributes._validate_hostname(data)
+            self.assertIsNotNone(msg)
 
-        data = 'www.openstack.org'
-        msg = attributes._validate_regex(data, attributes.HOSTNAME_PATTERN)
-        self.assertIsNone(msg)
+        # All numeric hostnames are allowed per RFC 1123 section 2.1
+        good_values = ['www.openstack.org', '1234x', '1234',
+                       'openstack-1', 'v.xyz', '1' * 50, 'a1a',
+                       'x.x1x', 'x.yz', 'example.org.']
+        for data in good_values:
+            msg = attributes._validate_hostname(data)
+            self.assertIsNone(msg)
 
     def test_uuid_pattern(self):
         data = 'garbage'

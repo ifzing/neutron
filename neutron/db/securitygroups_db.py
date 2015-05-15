@@ -82,7 +82,7 @@ class SecurityGroupRule(model_base.BASEV2, models_v2.HasId,
     remote_ip_prefix = sa.Column(sa.String(255))
     security_group = orm.relationship(
         SecurityGroup,
-        backref=orm.backref('rules', cascade='all,delete'),
+        backref=orm.backref('rules', cascade='all,delete', lazy='joined'),
         primaryjoin="SecurityGroup.id==SecurityGroupRule.security_group_id")
     source_group = orm.relationship(
         SecurityGroup,
@@ -147,7 +147,12 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         # because all the unit tests do not explicitly set the context on
         # GETS. TODO(arosen)  context handling can probably be improved here.
         if not default_sg and context.tenant_id:
-            self._ensure_default_security_group(context, context.tenant_id)
+            tenant_id = filters.get('tenant_id')
+            if tenant_id:
+                tenant_id = tenant_id[0]
+            else:
+                tenant_id = context.tenant_id
+            self._ensure_default_security_group(context, tenant_id)
         marker_obj = self._get_marker_obj(context, 'security_group', limit,
                                           marker)
         return self._get_collection(context,
@@ -291,7 +296,11 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
     def _get_ip_proto_number(self, protocol):
         if protocol is None:
             return
-        return IP_PROTOCOL_MAP.get(protocol, protocol)
+        # According to bug 1381379, protocol is always set to string to avoid
+        # problems with comparing int and string in PostgreSQL. Here this
+        # string is converted to int to give an opportunity to use it as
+        # before.
+        return int(IP_PROTOCOL_MAP.get(protocol, protocol))
 
     def _validate_port_range(self, rule):
         """Check that port_range is valid."""
@@ -405,7 +414,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             # remote_group_id. Therefore it is not possible to do this
             # query unless the behavior of _get_collection()
             # is changed which cannot be because other methods are already
-            # relying on this behavor. Therefore, we do the filtering
+            # relying on this behavior. Therefore, we do the filtering
             # below to check for these corner cases.
             for db_rule in db_rules:
                 # need to remove id from db_rule for matching
@@ -518,9 +527,13 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             return
 
         port_sg = p.get(ext_sg.SECURITYGROUPS, [])
+        filters = {'id': port_sg}
+        tenant_id = p.get('tenant_id')
+        if tenant_id:
+            filters['tenant_id'] = [tenant_id]
         valid_groups = set(g['id'] for g in
                            self.get_security_groups(context, fields=['id'],
-                                                    filters={'id': port_sg}))
+                                                    filters=filters))
 
         requested_groups = set(port_sg)
         port_sg_missing = requested_groups - valid_groups

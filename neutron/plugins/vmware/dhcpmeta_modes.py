@@ -18,11 +18,13 @@
 from oslo.config import cfg
 
 from neutron.api.rpc.agentnotifiers import dhcp_rpc_agent_api
+from neutron.api.rpc.handlers import dhcp_rpc
 from neutron.common import constants as const
+from neutron.common import rpc as n_rpc
 from neutron.common import topics
+from neutron.db import agents_db
 from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
-from neutron.openstack.common import rpc
 from neutron.plugins.vmware.common import config
 from neutron.plugins.vmware.common import exceptions as nsx_exc
 from neutron.plugins.vmware.dhcp_meta import combined
@@ -69,12 +71,13 @@ class DhcpMetadataAccess(object):
 
     def _setup_rpc_dhcp_metadata(self, notifier=None):
         self.topic = topics.PLUGIN
-        self.conn = rpc.create_connection(new=True)
-        self.dispatcher = nsx_rpc.NSXRpcCallbacks().create_rpc_dispatcher()
-        self.conn.create_consumer(self.topic, self.dispatcher, fanout=False)
+        self.conn = n_rpc.create_connection(new=True)
+        self.endpoints = [dhcp_rpc.DhcpRpcCallback(),
+                          agents_db.AgentExtRpcCallback()]
+        self.conn.create_consumer(self.topic, self.endpoints, fanout=False)
         self.agent_notifiers[const.AGENT_TYPE_DHCP] = (
             notifier or dhcp_rpc_agent_api.DhcpAgentNotifyAPI())
-        self.conn.consume_in_thread()
+        self.conn.consume_in_threads()
         self.network_scheduler = importutils.import_object(
             cfg.CONF.network_scheduler_driver
         )
@@ -86,10 +89,11 @@ class DhcpMetadataAccess(object):
         nsx_svc.register_dhcp_opts(cfg)
         nsx_svc.register_metadata_opts(cfg)
         lsnmanager.register_lsn_opts(cfg)
-        lsn_manager = lsnmanager.PersistentLsnManager(self)
+        lsn_manager = lsnmanager.PersistentLsnManager(self.safe_reference)
         self.lsn_manager = lsn_manager
         if cfg.CONF.NSX.agent_mode == config.AgentModes.AGENTLESS:
-            notifier = nsx_svc.DhcpAgentNotifyAPI(self, lsn_manager)
+            notifier = nsx_svc.DhcpAgentNotifyAPI(self.safe_reference,
+                                                  lsn_manager)
             self.agent_notifiers[const.AGENT_TYPE_DHCP] = notifier
             # In agentless mode, ports whose owner is DHCP need to
             # be special cased; so add it to the list of special
@@ -101,11 +105,13 @@ class DhcpMetadataAccess(object):
             # are handled by Logical Services Nodes in NSX
             cfg.CONF.set_override('network_auto_schedule', False)
             LOG.warn(_('network_auto_schedule has been disabled'))
-            notifier = combined.DhcpAgentNotifyAPI(self, lsn_manager)
+            notifier = combined.DhcpAgentNotifyAPI(self.safe_reference,
+                                                   lsn_manager)
             self.supported_extension_aliases.append(lsn.EXT_ALIAS)
             # Add the capability to migrate dhcp and metadata services over
             self.migration_manager = (
-                migration.MigrationManager(self, lsn_manager, notifier))
+                migration.MigrationManager(
+                    self.safe_reference, lsn_manager, notifier))
         return notifier
 
     def _init_extensions(self):
@@ -141,17 +147,18 @@ class DhcpMetadataAccess(object):
         return {'network': network_id, 'report': r}
 
     def handle_network_dhcp_access(self, context, network, action):
-        self.handle_network_dhcp_access_delegate(self, context,
+        self.handle_network_dhcp_access_delegate(self.safe_reference, context,
                                                  network, action)
 
     def handle_port_dhcp_access(self, context, port_data, action):
-        self.handle_port_dhcp_access_delegate(self, context, port_data, action)
+        self.handle_port_dhcp_access_delegate(self.safe_reference, context,
+                                              port_data, action)
 
     def handle_port_metadata_access(self, context, port, is_delete=False):
-        self.handle_port_metadata_access_delegate(self, context,
+        self.handle_port_metadata_access_delegate(self.safe_reference, context,
                                                   port, is_delete)
 
     def handle_router_metadata_access(self, context,
                                       router_id, interface=None):
-        self.handle_metadata_access_delegate(self, context,
+        self.handle_metadata_access_delegate(self.safe_reference, context,
                                              router_id, interface)

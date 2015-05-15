@@ -1,7 +1,5 @@
 # Copyright (C) 2013 eNovance SAS <licensing@enovance.com>
 #
-# Author: Sylvain Afchain <sylvain.afchain@enovance.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -83,8 +81,7 @@ class TestMeteringPlugin(test_db_plugin.NeutronDbPluginV2TestCase,
         self.uuid_patch = mock.patch(uuid, return_value=self.uuid)
         self.mock_uuid = self.uuid_patch.start()
 
-        fanout = ('neutron.openstack.common.rpc.proxy.RpcProxy.'
-                  'fanout_cast')
+        fanout = ('neutron.common.rpc.RpcProxy.fanout_cast')
         self.fanout_patch = mock.patch(fanout)
         self.mock_fanout = self.fanout_patch.start()
 
@@ -119,8 +116,33 @@ class TestMeteringPlugin(test_db_plugin.NeutronDbPluginV2TestCase,
                              set_context=True):
                 with self.metering_label(tenant_id=self.tenant_id,
                                          set_context=True):
-                    self.mock_fanout.assert_called_with(self.ctx, expected,
-                                                        topic=self.topic)
+                    self.mock_fanout.assert_called_with(self.ctx, expected)
+
+    def test_add_metering_label_shared_rpc_call(self):
+        second_uuid = 'e27fe2df-376e-4ac7-ae13-92f050a21f84'
+        expected = {'args': {'routers': [{'status': 'ACTIVE',
+                                          'name': 'router1',
+                                          'gw_port_id': None,
+                                          'admin_state_up': True,
+                                          'tenant_id': self.tenant_id,
+                                          '_metering_labels': [
+                                              {'rules': [],
+                                               'id': self.uuid},
+                                              {'rules': [],
+                                               'id': second_uuid}],
+                                          'id': self.uuid}]},
+                    'namespace': None,
+                    'method': 'add_metering_label'}
+
+        tenant_id_2 = '8a268a58-1610-4890-87e0-07abb8231206'
+        with self.router(name='router1', tenant_id=self.tenant_id,
+                         set_context=True):
+            with self.metering_label(tenant_id=self.tenant_id,
+                                     set_context=True):
+                self.mock_uuid.return_value = second_uuid
+                with self.metering_label(tenant_id=tenant_id_2, shared=True,
+                                         set_context=True):
+                    self.mock_fanout.assert_called_with(self.ctx, expected)
 
     def test_remove_metering_label_rpc_call(self):
         expected = {'args':
@@ -139,11 +161,9 @@ class TestMeteringPlugin(test_db_plugin.NeutronDbPluginV2TestCase,
         with self.router(tenant_id=self.tenant_id, set_context=True):
             with self.metering_label(tenant_id=self.tenant_id,
                                      set_context=True):
-                self.mock_fanout.assert_called_with(self.ctx, expected,
-                                                    topic=self.topic)
+                self.mock_fanout.assert_called_with(self.ctx, expected)
             expected['method'] = 'remove_metering_label'
-            self.mock_fanout.assert_called_with(self.ctx, expected,
-                                                topic=self.topic)
+            self.mock_fanout.assert_called_with(self.ctx, expected)
 
     def test_remove_one_metering_label_rpc_call(self):
         second_uuid = 'e27fe2df-376e-4ac7-ae13-92f050a21f84'
@@ -180,10 +200,8 @@ class TestMeteringPlugin(test_db_plugin.NeutronDbPluginV2TestCase,
                 self.mock_uuid.return_value = second_uuid
                 with self.metering_label(tenant_id=self.tenant_id,
                                          set_context=True):
-                    self.mock_fanout.assert_called_with(self.ctx, expected_add,
-                                                        topic=self.topic)
-                self.mock_fanout.assert_called_with(self.ctx, expected_remove,
-                                                    topic=self.topic)
+                    self.mock_fanout.assert_called_with(self.ctx, expected_add)
+                self.mock_fanout.assert_called_with(self.ctx, expected_remove)
 
     def test_update_metering_label_rules_rpc_call(self):
         second_uuid = 'e27fe2df-376e-4ac7-ae13-92f050a21f84'
@@ -238,16 +256,14 @@ class TestMeteringPlugin(test_db_plugin.NeutronDbPluginV2TestCase,
                     self.mock_uuid.return_value = second_uuid
                     with self.metering_label_rule(l['id'], direction='egress'):
                         self.mock_fanout.assert_called_with(self.ctx,
-                                                            expected_add,
-                                                            topic=self.topic)
+                                                            expected_add)
                     self.mock_fanout.assert_called_with(self.ctx,
-                                                        expected_del,
-                                                        topic=self.topic)
+                                                        expected_del)
 
     def test_delete_metering_label_does_not_clear_router_tenant_id(self):
         tenant_id = '654f6b9d-0f36-4ae5-bd1b-01616794ca60'
         with self.metering_label(tenant_id=tenant_id,
-                                 no_delete=True) as metering_label:
+                                 do_delete=False) as metering_label:
             with self.router(tenant_id=tenant_id, set_context=True) as r:
                 router = self._show('routers', r['router']['id'])
                 self.assertEqual(tenant_id, router['router']['tenant_id'])
@@ -291,7 +307,7 @@ class TestMeteringPluginL3AgentScheduler(
         self.uuid_patch = mock.patch(uuid, return_value=self.uuid)
         self.mock_uuid = self.uuid_patch.start()
 
-        cast = 'neutron.openstack.common.rpc.proxy.RpcProxy.cast'
+        cast = 'neutron.common.rpc.RpcProxy.cast'
         self.cast_patch = mock.patch(cast)
         self.mock_cast = self.cast_patch.start()
 
@@ -409,6 +425,10 @@ class TestMeteringPluginRpcFromL3Agent(
         self.meter_plugin = manager.NeutronManager.get_service_plugins().get(
             constants.METERING)
 
+        self.tenant_id = 'admin_tenant_id'
+        self.tenant_id_1 = 'tenant_id_1'
+        self.tenant_id_2 = 'tenant_id_2'
+
         self.adminContext = context.get_admin_context()
         self._register_l3_agent('agent1')
 
@@ -447,3 +467,29 @@ class TestMeteringPluginRpcFromL3Agent(
 
                 self._remove_external_gateway_from_router(
                     r['id'], s['network_id'])
+
+    def test_get_sync_data_metering_shared(self):
+        with self.router(name='router1', tenant_id=self.tenant_id_1):
+            with self.router(name='router2', tenant_id=self.tenant_id_2):
+                with self.metering_label(tenant_id=self.tenant_id,
+                                         shared=True):
+                    callbacks = metering_rpc.MeteringRpcCallbacks(
+                        self.meter_plugin)
+                    data = callbacks.get_sync_data_metering(self.adminContext)
+
+                    routers = [router['name'] for router in data]
+
+                    self.assertIn('router1', routers)
+                    self.assertIn('router2', routers)
+
+    def test_get_sync_data_metering_not_shared(self):
+        with self.router(name='router1', tenant_id=self.tenant_id_1):
+            with self.router(name='router2', tenant_id=self.tenant_id_2):
+                with self.metering_label(tenant_id=self.tenant_id):
+                    callbacks = metering_rpc.MeteringRpcCallbacks(
+                        self.meter_plugin)
+                    data = callbacks.get_sync_data_metering(self.adminContext)
+
+                    routers = [router['name'] for router in data]
+
+                    self.assertEqual([], routers)

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 Cloudbase Solutions SRL
 # All Rights Reserved.
 #
@@ -14,7 +12,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-# @author: Alessandro Pilotti, Cloudbase Solutions Srl
 
 from six import moves
 from sqlalchemy.orm import exc
@@ -30,8 +27,6 @@ LOG = logging.getLogger(__name__)
 
 
 class HyperVPluginDB(object):
-    def initialize(self):
-        db_api.configure_db()
 
     def reserve_vlan(self, session):
         with session.begin(subtransactions=True):

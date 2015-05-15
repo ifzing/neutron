@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013, Nachi Ueno, NTT I3, Inc.
 # All Rights Reserved.
 #
@@ -19,9 +17,10 @@ import abc
 
 import six
 
+from neutron.common import rpc as n_rpc
+from neutron.db.vpn import vpn_validator
 from neutron import manager
 from neutron.openstack.common import log as logging
-from neutron.openstack.common.rpc import proxy
 from neutron.plugins.common import constants
 
 LOG = logging.getLogger(__name__)
@@ -30,8 +29,16 @@ LOG = logging.getLogger(__name__)
 @six.add_metaclass(abc.ABCMeta)
 class VpnDriver(object):
 
-    def __init__(self, service_plugin):
+    def __init__(self, service_plugin, validator=None):
         self.service_plugin = service_plugin
+        if validator is None:
+            validator = vpn_validator.VpnReferenceValidator()
+        self.validator = validator
+
+    @property
+    def l3_plugin(self):
+        return manager.NeutronManager.get_service_plugins().get(
+            constants.L3_ROUTER_NAT)
 
     @property
     def service_type(self):
@@ -50,12 +57,26 @@ class VpnDriver(object):
     def delete_vpnservice(self, context, vpnservice):
         pass
 
+    @abc.abstractmethod
+    def create_ipsec_site_connection(self, context, ipsec_site_connection):
+        pass
 
-class BaseIPsecVpnAgentApi(proxy.RpcProxy):
+    @abc.abstractmethod
+    def update_ipsec_site_connection(self, context, old_ipsec_site_connection,
+                                     ipsec_site_connection):
+        pass
+
+    @abc.abstractmethod
+    def delete_ipsec_site_connection(self, context, ipsec_site_connection):
+        pass
+
+
+class BaseIPsecVpnAgentApi(n_rpc.RpcProxy):
     """Base class for IPSec API to agent."""
 
-    def __init__(self, to_agent_topic, topic, default_version):
-        self.to_agent_topic = to_agent_topic
+    def __init__(self, topic, default_version, driver):
+        self.topic = topic
+        self.driver = driver
         super(BaseIPsecVpnAgentApi, self).__init__(topic, default_version)
 
     def _agent_notification(self, context, method, router_id,
@@ -66,25 +87,23 @@ class BaseIPsecVpnAgentApi(proxy.RpcProxy):
         dispatch notification for the agent.
         """
         admin_context = context.is_admin and context or context.elevated()
-        plugin = manager.NeutronManager.get_service_plugins().get(
-            constants.L3_ROUTER_NAT)
         if not version:
             version = self.RPC_API_VERSION
-        l3_agents = plugin.get_l3_agents_hosting_routers(
+        l3_agents = self.driver.l3_plugin.get_l3_agents_hosting_routers(
             admin_context, [router_id],
             admin_state_up=True,
             active=True)
         for l3_agent in l3_agents:
             LOG.debug(_('Notify agent at %(topic)s.%(host)s the message '
                         '%(method)s %(args)s'),
-                      {'topic': self.to_agent_topic,
+                      {'topic': self.topic,
                        'host': l3_agent.host,
                        'method': method,
                        'args': kwargs})
             self.cast(
                 context, self.make_msg(method, **kwargs),
                 version=version,
-                topic='%s.%s' % (self.to_agent_topic, l3_agent.host))
+                topic='%s.%s' % (self.topic, l3_agent.host))
 
     def vpnservice_updated(self, context, router_id, **kwargs):
         """Send update event of vpnservices."""

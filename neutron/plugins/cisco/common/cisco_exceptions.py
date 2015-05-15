@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2011 Cisco Systems, Inc.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,9 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Sumit Naiksatam, Cisco Systems, Inc.
-# @author: Rohit Agarwalla, Cisco Systems, Inc.
 
 """Exceptions used by the Cisco plugin."""
 
@@ -167,6 +162,12 @@ class NetworkProfileAlreadyExists(exceptions.NeutronException):
 class NetworkProfileNotFound(exceptions.NotFound):
     """Network Profile with the given UUID/name cannot be found."""
     message = _("Network Profile %(profile)s could not be found.")
+
+
+class NetworkProfileInUse(exceptions.InUse):
+    """Network Profile with the given UUID is in use."""
+    message = _("One or more network segments belonging to network "
+                "profile %(profile)s is in use.")
 
 
 class NoMoreNetworkSegments(exceptions.NoNetworkAvailable):

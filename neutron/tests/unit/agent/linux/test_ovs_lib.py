@@ -22,7 +22,7 @@ from neutron.agent.linux import utils
 from neutron.common import exceptions
 from neutron.openstack.common import jsonutils
 from neutron.openstack.common import uuidutils
-from neutron.plugins.openvswitch.common import constants
+from neutron.plugins.common import constants
 from neutron.tests import base
 from neutron.tests import tools
 
@@ -108,6 +108,24 @@ class TestBaseOVS(base.BaseTestCase):
         self._test_port_exists(None, False)
 
 
+class OFCTLParamListMatcher(object):
+
+    def _parse(self, params):
+        actions_pos = params.find('actions')
+        return set(params[:actions_pos].split(',')), params[actions_pos:]
+
+    def __init__(self, params):
+        self.expected = self._parse(params)
+
+    def __eq__(self, other):
+        return self.expected == self._parse(other)
+
+    def __str__(self):
+        return 'ovs-ofctl parameters: %s, "%s"' % self.expected
+
+    __repr__ = __str__
+
+
 class OVS_Lib_Test(base.BaseTestCase):
     """A test suite to exercise the OVS libraries shared by Neutron agents.
 
@@ -166,6 +184,12 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.execute.assert_called_once_with(
             ['ovs-vsctl', self.TO, '--', 'get-controller', self.BR_NAME],
             root_helper=self.root_helper)
+
+    def test_set_secure_mode(self):
+        self.br.set_secure_mode()
+        self.execute.assert_called_once_with(
+            ['ovs-vsctl', self.TO, '--', 'set-fail-mode', self.BR_NAME,
+             'secure'], root_helper=self.root_helper)
 
     def test_set_protocols(self):
         protocols = 'OpenFlow13'
@@ -253,39 +277,45 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.br.add_flow(**flow_dict_6)
         self.br.add_flow(**flow_dict_7)
         expected_calls = [
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=2,dl_src=ca:fe:de:ad:be:ef"
-                       ",actions=strip_vlan,output:0"],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=1,actions=normal"],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=2,actions=drop"],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=2,in_port=%s,actions=drop" % ofport],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=4,dl_vlan=%s,in_port=%s,"
-                       "actions=strip_vlan,set_tunnel:%s,normal"
-                       % (vid, ofport, lsw_id)],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=3,tun_id=%s,actions="
-                       "mod_vlan_vid:%s,output:%s"
-                       % (lsw_id, vid, ofport)],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "add-flow", self.BR_NAME,
-                       "hard_timeout=0,idle_timeout=0,"
-                       "priority=4,nw_src=%s,arp,actions=drop" % cidr],
-                      process_input=None, root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,"
+                          "priority=2,dl_src=ca:fe:de:ad:be:ef,"
+                          "actions=strip_vlan,output:0"),
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,"
+                          "priority=1,actions=normal"),
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,"
+                          "priority=2,actions=drop"),
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,priority=2,"
+                          "in_port=%s,actions=drop" % ofport),
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,"
+                          "priority=4,dl_vlan=%s,in_port=%s,"
+                          "actions=strip_vlan,set_tunnel:%s,normal"
+                          % (vid, ofport, lsw_id)),
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,priority=3,"
+                          "tun_id=%s,actions=mod_vlan_vid:%s,"
+                          "output:%s" % (lsw_id, vid, ofport)),
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+                      process_input=OFCTLParamListMatcher(
+                          "hard_timeout=0,idle_timeout=0,priority=4,"
+                          "nw_src=%s,arp,actions=drop" % cidr),
+                      root_helper=self.root_helper),
         ]
         self.execute.assert_has_calls(expected_calls)
 
@@ -297,9 +327,9 @@ class OVS_Lib_Test(base.BaseTestCase):
 
         self.br.add_flow(**flow_dict)
         self.execute.assert_called_once_with(
-            ["ovs-ofctl", "add-flow", self.BR_NAME,
-             "hard_timeout=1000,idle_timeout=2000,priority=1,actions=normal"],
-            process_input=None,
+            ["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+            process_input="hard_timeout=1000,idle_timeout=2000,priority=1,"
+                          "actions=normal",
             root_helper=self.root_helper)
 
     def test_add_flow_default_priority(self):
@@ -307,19 +337,27 @@ class OVS_Lib_Test(base.BaseTestCase):
 
         self.br.add_flow(**flow_dict)
         self.execute.assert_called_once_with(
-            ["ovs-ofctl", "add-flow", self.BR_NAME,
-             "hard_timeout=0,idle_timeout=0,priority=1,actions=normal"],
-            process_input=None,
+            ["ovs-ofctl", "add-flows", self.BR_NAME, '-'],
+            process_input="hard_timeout=0,idle_timeout=0,priority=1,"
+                          "actions=normal",
             root_helper=self.root_helper)
 
-    def test_get_port_ofport(self):
+    def _test_get_port_ofport(self, ofport, expected_result):
         pname = "tap99"
-        ofport = "6"
         self.execute.return_value = ofport
-        self.assertEqual(self.br.get_port_ofport(pname), ofport)
+        self.assertEqual(self.br.get_port_ofport(pname), expected_result)
         self.execute.assert_called_once_with(
             ["ovs-vsctl", self.TO, "get", "Interface", pname, "ofport"],
             root_helper=self.root_helper)
+
+    def test_get_port_ofport_succeeds_for_valid_ofport(self):
+        self._test_get_port_ofport("6", "6")
+
+    def test_get_port_ofport_returns_invalid_ofport_for_non_int(self):
+        self._test_get_port_ofport("[]", ovs_lib.INVALID_OFPORT)
+
+    def test_get_port_ofport_returns_invalid_ofport_for_none(self):
+        self._test_get_port_ofport(None, ovs_lib.INVALID_OFPORT)
 
     def test_get_datapath_id(self):
         datapath_id = '"0000b67f4fbcc149"'
@@ -347,15 +385,15 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.br.delete_flows(tun_id=lsw_id)
         self.br.delete_flows(dl_vlan=vid)
         expected_calls = [
-            mock.call(["ovs-ofctl", "del-flows", self.BR_NAME,
-                       "in_port=" + ofport],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "del-flows", self.BR_NAME,
-                       "tun_id=%s" % lsw_id],
-                      process_input=None, root_helper=self.root_helper),
-            mock.call(["ovs-ofctl", "del-flows", self.BR_NAME,
-                       "dl_vlan=%s" % vid],
-                      process_input=None, root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "del-flows", self.BR_NAME, '-'],
+                      process_input="in_port=" + ofport,
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "del-flows", self.BR_NAME, '-'],
+                      process_input="tun_id=%s" % lsw_id,
+                      root_helper=self.root_helper),
+            mock.call(["ovs-ofctl", "del-flows", self.BR_NAME, '-'],
+                      process_input="dl_vlan=%s" % vid,
+                      root_helper=self.root_helper),
         ]
         self.execute.assert_has_calls(expected_calls)
 
@@ -366,6 +404,34 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.assertRaises(exceptions.InvalidInput,
                           self.br.delete_flows,
                           **params)
+
+    def test_dump_flows(self):
+        table = 23
+        nxst_flow = "NXST_FLOW reply (xid=0x4):"
+        flows = "\n".join([" cookie=0x0, duration=18042.514s, table=0, "
+                           "n_packets=6, n_bytes=468, "
+                           "priority=2,in_port=1 actions=drop",
+                           " cookie=0x0, duration=18027.562s, table=0, "
+                           "n_packets=0, n_bytes=0, "
+                           "priority=3,in_port=1,dl_vlan=100 "
+                           "actions=mod_vlan_vid:1,NORMAL",
+                           " cookie=0x0, duration=18044.351s, table=0, "
+                           "n_packets=9, n_bytes=594, priority=1 "
+                           "actions=NORMAL", " cookie=0x0, "
+                           "duration=18044.211s, table=23, n_packets=0, "
+                           "n_bytes=0, priority=0 actions=drop"])
+        flow_args = '\n'.join([nxst_flow, flows])
+        run_ofctl = mock.patch.object(self.br, 'run_ofctl').start()
+        run_ofctl.side_effect = [flow_args]
+        retflows = self.br.dump_flows_for_table(table)
+        self.assertEqual(flows, retflows)
+
+    def test_dump_flows_ovs_dead(self):
+        table = 23
+        run_ofctl = mock.patch.object(self.br, 'run_ofctl').start()
+        run_ofctl.side_effect = ['']
+        retflows = self.br.dump_flows_for_table(table)
+        self.assertEqual(None, retflows)
 
     def test_mod_flow_with_priority_set(self):
         params = {'in_port': '1',
@@ -382,75 +448,6 @@ class OVS_Lib_Test(base.BaseTestCase):
                           self.br.mod_flow,
                           **params)
 
-    def test_defer_apply_flows(self):
-
-        flow_expr = mock.patch.object(ovs_lib, '_build_flow_expr_str').start()
-        flow_expr.side_effect = ['added_flow_1', 'added_flow_2',
-                                 'deleted_flow_1']
-        run_ofctl = mock.patch.object(self.br, 'run_ofctl').start()
-
-        self.br.defer_apply_on()
-        self.br.add_flow(flow='add_flow_1')
-        self.br.defer_apply_on()
-        self.br.add_flow(flow='add_flow_2')
-        self.br.delete_flows(flow='delete_flow_1')
-        self.br.defer_apply_off()
-
-        flow_expr.assert_has_calls([
-            mock.call({'flow': 'add_flow_1'}, 'add'),
-            mock.call({'flow': 'add_flow_2'}, 'add'),
-            mock.call({'flow': 'delete_flow_1'}, 'del')
-        ])
-
-        run_ofctl.assert_has_calls([
-            mock.call('add-flows', ['-'], 'added_flow_1\nadded_flow_2\n'),
-            mock.call('del-flows', ['-'], 'deleted_flow_1\n')
-        ])
-
-    def test_defer_apply_flows_concurrently(self):
-        flow_expr = mock.patch.object(ovs_lib, '_build_flow_expr_str').start()
-        flow_expr.side_effect = ['added_flow_1', 'deleted_flow_1',
-                                 'modified_flow_1', 'added_flow_2',
-                                 'deleted_flow_2', 'modified_flow_2']
-
-        run_ofctl = mock.patch.object(self.br, 'run_ofctl').start()
-
-        def run_ofctl_fake(cmd, args, process_input=None):
-            self.br.defer_apply_on()
-            if cmd == 'add-flows':
-                self.br.add_flow(flow='added_flow_2')
-            elif cmd == 'del-flows':
-                self.br.delete_flows(flow='deleted_flow_2')
-            elif cmd == 'mod-flows':
-                self.br.mod_flow(flow='modified_flow_2')
-        run_ofctl.side_effect = run_ofctl_fake
-
-        self.br.defer_apply_on()
-        self.br.add_flow(flow='added_flow_1')
-        self.br.delete_flows(flow='deleted_flow_1')
-        self.br.mod_flow(flow='modified_flow_1')
-        self.br.defer_apply_off()
-
-        run_ofctl.side_effect = None
-        self.br.defer_apply_off()
-
-        flow_expr.assert_has_calls([
-            mock.call({'flow': 'added_flow_1'}, 'add'),
-            mock.call({'flow': 'deleted_flow_1'}, 'del'),
-            mock.call({'flow': 'modified_flow_1'}, 'mod'),
-            mock.call({'flow': 'added_flow_2'}, 'add'),
-            mock.call({'flow': 'deleted_flow_2'}, 'del'),
-            mock.call({'flow': 'modified_flow_2'}, 'mod')
-        ])
-        run_ofctl.assert_has_calls([
-            mock.call('add-flows', ['-'], 'added_flow_1\n'),
-            mock.call('del-flows', ['-'], 'deleted_flow_1\n'),
-            mock.call('mod-flows', ['-'], 'modified_flow_1\n'),
-            mock.call('add-flows', ['-'], 'added_flow_2\n'),
-            mock.call('del-flows', ['-'], 'deleted_flow_2\n'),
-            mock.call('mod-flows', ['-'], 'modified_flow_2\n')
-        ])
-
     def test_add_tunnel_port(self):
         pname = "tap99"
         local_ip = "1.1.1.1"
@@ -459,7 +456,8 @@ class OVS_Lib_Test(base.BaseTestCase):
         command = ["ovs-vsctl", self.TO, '--', "--may-exist", "add-port",
                    self.BR_NAME, pname]
         command.extend(["--", "set", "Interface", pname])
-        command.extend(["type=gre", "options:remote_ip=" + remote_ip,
+        command.extend(["type=gre", "options:df_default=true",
+                        "options:remote_ip=" + remote_ip,
                         "options:local_ip=" + local_ip,
                         "options:in_key=flow",
                         "options:out_key=flow"])
@@ -475,6 +473,41 @@ class OVS_Lib_Test(base.BaseTestCase):
 
         self.assertEqual(
             self.br.add_tunnel_port(pname, remote_ip, local_ip),
+            ofport)
+
+        tools.verify_mock_calls(self.execute, expected_calls_and_values)
+
+    def test_add_vxlan_fragmented_tunnel_port(self):
+        pname = "tap99"
+        local_ip = "1.1.1.1"
+        remote_ip = "9.9.9.9"
+        ofport = "6"
+        vxlan_udp_port = "9999"
+        dont_fragment = False
+        command = ["ovs-vsctl", self.TO, '--', "--may-exist", "add-port",
+                   self.BR_NAME, pname]
+        command.extend(["--", "set", "Interface", pname])
+        command.extend(["type=" + constants.TYPE_VXLAN,
+                        "options:dst_port=" + vxlan_udp_port,
+                        "options:df_default=false",
+                        "options:remote_ip=" + remote_ip,
+                        "options:local_ip=" + local_ip,
+                        "options:in_key=flow",
+                        "options:out_key=flow"])
+        # Each element is a tuple of (expected mock call, return_value)
+        expected_calls_and_values = [
+            (mock.call(command, root_helper=self.root_helper), None),
+            (mock.call(["ovs-vsctl", self.TO, "get",
+                        "Interface", pname, "ofport"],
+                       root_helper=self.root_helper),
+             ofport),
+        ]
+        tools.setup_mock_calls(self.execute, expected_calls_and_values)
+
+        self.assertEqual(
+            self.br.add_tunnel_port(pname, remote_ip, local_ip,
+                                    constants.TYPE_VXLAN, vxlan_udp_port,
+                                    dont_fragment),
             ofport)
 
         tools.verify_mock_calls(self.execute, expected_calls_and_values)
@@ -854,96 +887,115 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.assertIsNone(self._test_get_vif_port_by_id('tap99id', data,
                                                         "br-ext"))
 
-    def _check_ovs_vxlan_version(self, installed_usr_version,
-                                 installed_klm_version,
-                                 installed_kernel_version,
-                                 expecting_ok):
-        with mock.patch(
-                'neutron.agent.linux.ovs_lib.get_installed_ovs_klm_version'
-        ) as klm_cmd:
-            with mock.patch(
-                'neutron.agent.linux.ovs_lib.get_installed_ovs_usr_version'
-            ) as usr_cmd:
-                with mock.patch(
-                    'neutron.agent.linux.ovs_lib.get_installed_kernel_version'
-                ) as kernel_cmd:
-                    try:
-                        klm_cmd.return_value = installed_klm_version
-                        usr_cmd.return_value = installed_usr_version
-                        kernel_cmd.return_value = installed_kernel_version
-                        ovs_lib.check_ovs_vxlan_version(root_helper='sudo')
-                        version_ok = True
-                    except SystemError:
-                        version_ok = False
-                self.assertEqual(version_ok, expecting_ok)
 
-    def test_check_minimum_version(self):
-        min_vxlan_ver = constants.MINIMUM_OVS_VXLAN_VERSION
-        min_kernel_ver = constants.MINIMUM_LINUX_KERNEL_OVS_VXLAN
-        self._check_ovs_vxlan_version(min_vxlan_ver, min_vxlan_ver,
-                                      min_kernel_ver, expecting_ok=True)
+class TestDeferredOVSBridge(base.BaseTestCase):
 
-    def test_check_future_version(self):
-        install_ver = str(float(constants.MINIMUM_OVS_VXLAN_VERSION) + 0.01)
-        min_kernel_ver = constants.MINIMUM_LINUX_KERNEL_OVS_VXLAN
-        self._check_ovs_vxlan_version(install_ver, install_ver,
-                                      min_kernel_ver, expecting_ok=True)
+    def setUp(self):
+        super(TestDeferredOVSBridge, self).setUp()
 
-    def test_check_fail_version(self):
-        install_ver = str(float(constants.MINIMUM_OVS_VXLAN_VERSION) - 0.01)
-        min_kernel_ver = constants.MINIMUM_LINUX_KERNEL_OVS_VXLAN
-        self._check_ovs_vxlan_version(install_ver, install_ver,
-                                      min_kernel_ver, expecting_ok=False)
+        self.br = mock.Mock()
+        self.mocked_do_action_flows = mock.patch.object(
+            self.br, 'do_action_flows').start()
 
-    def test_check_fail_no_version(self):
-        min_kernel_ver = constants.MINIMUM_LINUX_KERNEL_OVS_VXLAN
-        self._check_ovs_vxlan_version(None, None,
-                                      min_kernel_ver,
-                                      expecting_ok=False)
+        self.add_flow_dict1 = dict(in_port=11, actions='drop')
+        self.add_flow_dict2 = dict(in_port=12, actions='drop')
+        self.mod_flow_dict1 = dict(in_port=21, actions='drop')
+        self.mod_flow_dict2 = dict(in_port=22, actions='drop')
+        self.del_flow_dict1 = dict(in_port=31)
+        self.del_flow_dict2 = dict(in_port=32)
 
-    def test_check_fail_klm_version(self):
-        min_vxlan_ver = constants.MINIMUM_OVS_VXLAN_VERSION
-        min_kernel_ver = OVS_LINUX_KERN_VERS_WITHOUT_VXLAN
-        install_ver = str(float(min_vxlan_ver) - 0.01)
-        self._check_ovs_vxlan_version(min_vxlan_ver,
-                                      install_ver,
-                                      min_kernel_ver,
-                                      expecting_ok=False)
+    def test_right_allowed_passthroughs(self):
+        expected_passthroughs = ('add_port', 'add_tunnel_port', 'delete_port')
+        self.assertEqual(expected_passthroughs,
+                         ovs_lib.DeferredOVSBridge.ALLOWED_PASSTHROUGHS)
 
-    def test_check_pass_kernel_version(self):
-        min_vxlan_ver = constants.MINIMUM_OVS_VXLAN_VERSION
-        min_kernel_ver = constants.MINIMUM_LINUX_KERNEL_OVS_VXLAN
-        self._check_ovs_vxlan_version(min_vxlan_ver, min_vxlan_ver,
-                                      min_kernel_ver, expecting_ok=True)
+    def _verify_mock_call(self, expected_calls):
+        self.mocked_do_action_flows.assert_has_calls(expected_calls)
+        self.assertEqual(len(expected_calls),
+                         len(self.mocked_do_action_flows.mock_calls))
 
-    def test_ofctl_arg_supported(self):
-        with mock.patch('neutron.common.utils.get_random_string') as utils:
-            utils.return_value = 'test'
-            supported = ovs_lib.ofctl_arg_supported(self.root_helper, 'cmd',
-                                                    ['args'])
-            self.execute.assert_has_calls([
-                mock.call(['ovs-vsctl', self.TO, '--', '--if-exists', 'del-br',
-                           'br-test-test'], root_helper=self.root_helper),
-                mock.call(['ovs-vsctl', self.TO, '--', '--may-exist', 'add-br',
-                           'br-test-test'], root_helper=self.root_helper),
-                mock.call(['ovs-ofctl', 'cmd', 'br-test-test', 'args'],
-                          root_helper=self.root_helper),
-                mock.call(['ovs-vsctl', self.TO, '--', '--if-exists', 'del-br',
-                           'br-test-test'], root_helper=self.root_helper)
-            ])
-            self.assertTrue(supported)
+    def test_apply_on_exit(self):
+        expected_calls = [
+            mock.call('add', [self.add_flow_dict1]),
+            mock.call('mod', [self.mod_flow_dict1]),
+            mock.call('del', [self.del_flow_dict1]),
+        ]
 
-            self.execute.side_effect = Exception
-            supported = ovs_lib.ofctl_arg_supported(self.root_helper, 'cmd',
-                                                    ['args'])
-            self.execute.assert_has_calls([
-                mock.call(['ovs-vsctl', self.TO, '--', '--if-exists', 'del-br',
-                           'br-test-test'], root_helper=self.root_helper),
-                mock.call(['ovs-vsctl', self.TO, '--', '--may-exist', 'add-br',
-                           'br-test-test'], root_helper=self.root_helper),
-                mock.call(['ovs-ofctl', 'cmd', 'br-test-test', 'args'],
-                          root_helper=self.root_helper),
-                mock.call(['ovs-vsctl', self.TO, '--', '--if-exists', 'del-br',
-                           'br-test-test'], root_helper=self.root_helper)
-            ])
-            self.assertFalse(supported)
+        with ovs_lib.DeferredOVSBridge(self.br) as deferred_br:
+            deferred_br.add_flow(**self.add_flow_dict1)
+            deferred_br.mod_flow(**self.mod_flow_dict1)
+            deferred_br.delete_flows(**self.del_flow_dict1)
+            self._verify_mock_call([])
+        self._verify_mock_call(expected_calls)
+
+    def test_apply_on_exit_with_errors(self):
+        try:
+            with ovs_lib.DeferredOVSBridge(self.br) as deferred_br:
+                deferred_br.add_flow(**self.add_flow_dict1)
+                deferred_br.mod_flow(**self.mod_flow_dict1)
+                deferred_br.delete_flows(**self.del_flow_dict1)
+                raise Exception()
+        except Exception:
+            self._verify_mock_call([])
+        else:
+            self.fail('Exception would be reraised')
+
+    def test_apply(self):
+        expected_calls = [
+            mock.call('add', [self.add_flow_dict1]),
+            mock.call('mod', [self.mod_flow_dict1]),
+            mock.call('del', [self.del_flow_dict1]),
+        ]
+
+        with ovs_lib.DeferredOVSBridge(self.br) as deferred_br:
+            deferred_br.add_flow(**self.add_flow_dict1)
+            deferred_br.mod_flow(**self.mod_flow_dict1)
+            deferred_br.delete_flows(**self.del_flow_dict1)
+            self._verify_mock_call([])
+            deferred_br.apply_flows()
+            self._verify_mock_call(expected_calls)
+        self._verify_mock_call(expected_calls)
+
+    def test_apply_order(self):
+        expected_calls = [
+            mock.call('del', [self.del_flow_dict1, self.del_flow_dict2]),
+            mock.call('mod', [self.mod_flow_dict1, self.mod_flow_dict2]),
+            mock.call('add', [self.add_flow_dict1, self.add_flow_dict2]),
+        ]
+
+        order = 'del', 'mod', 'add'
+        with ovs_lib.DeferredOVSBridge(self.br, order=order) as deferred_br:
+            deferred_br.add_flow(**self.add_flow_dict1)
+            deferred_br.mod_flow(**self.mod_flow_dict1)
+            deferred_br.delete_flows(**self.del_flow_dict1)
+            deferred_br.delete_flows(**self.del_flow_dict2)
+            deferred_br.add_flow(**self.add_flow_dict2)
+            deferred_br.mod_flow(**self.mod_flow_dict2)
+        self._verify_mock_call(expected_calls)
+
+    def test_apply_full_ordered(self):
+        expected_calls = [
+            mock.call('add', [self.add_flow_dict1]),
+            mock.call('mod', [self.mod_flow_dict1]),
+            mock.call('del', [self.del_flow_dict1, self.del_flow_dict2]),
+            mock.call('add', [self.add_flow_dict2]),
+            mock.call('mod', [self.mod_flow_dict2]),
+        ]
+
+        with ovs_lib.DeferredOVSBridge(self.br,
+                                       full_ordered=True) as deferred_br:
+            deferred_br.add_flow(**self.add_flow_dict1)
+            deferred_br.mod_flow(**self.mod_flow_dict1)
+            deferred_br.delete_flows(**self.del_flow_dict1)
+            deferred_br.delete_flows(**self.del_flow_dict2)
+            deferred_br.add_flow(**self.add_flow_dict2)
+            deferred_br.mod_flow(**self.mod_flow_dict2)
+        self._verify_mock_call(expected_calls)
+
+    def test_getattr_unallowed_attr(self):
+        with ovs_lib.DeferredOVSBridge(self.br) as deferred_br:
+            self.assertEqual(self.br.add_port, deferred_br.add_port)
+
+    def test_getattr_unallowed_attr_failure(self):
+        with ovs_lib.DeferredOVSBridge(self.br) as deferred_br:
+            self.assertRaises(AttributeError, getattr, deferred_br, 'failure')

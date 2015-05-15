@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright (c) 2013 OpenStack Foundation
 # All Rights Reserved.
 #
@@ -14,10 +12,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Sumit Naiksatam, sumitnaiksatam@gmail.com, Big Switch Networks, Inc.
-# @author: Sridar Kandaswamy, skandasw@cisco.com, Cisco Systems, Inc.
-# @author: Dan Florea, dflorea@cisco.com, Cisco Systems, Inc.
 
 import contextlib
 import mock
@@ -79,8 +73,7 @@ class TestFWaaSAgentApi(base.BaseTestCase):
 
             mock_call.assert_called_once_with(
                 mock.sentinel.context,
-                mock_make_msg.return_value,
-                topic='topic')
+                mock_make_msg.return_value)
 
     def test_firewall_deleted(self):
         with contextlib.nested(
@@ -101,5 +94,4 @@ class TestFWaaSAgentApi(base.BaseTestCase):
 
             mock_call.assert_called_once_with(
                 mock.sentinel.context,
-                mock_make_msg.return_value,
-                topic='topic')
+                mock_make_msg.return_value)

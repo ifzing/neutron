@@ -11,8 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: linb, VMware
 
 import mock
 
@@ -96,7 +94,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_create_and_get_vip(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as pool:
+        with self.pool(do_delete=False) as pool:
             self.pool_id = pool['pool']['id']
             POOL_MAP_INFO['pool_id'] = pool['pool']['id']
             vcns_db.add_vcns_edge_pool_binding(ctx.session, POOL_MAP_INFO)
@@ -109,7 +107,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_create_two_vips_with_same_name(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as pool:
+        with self.pool(do_delete=False) as pool:
             self.pool_id = pool['pool']['id']
             POOL_MAP_INFO['pool_id'] = pool['pool']['id']
             vcns_db.add_vcns_edge_pool_binding(ctx.session, POOL_MAP_INFO)
@@ -210,7 +208,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_update_vip(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as pool:
+        with self.pool(do_delete=False) as pool:
             self.pool_id = pool['pool']['id']
             POOL_MAP_INFO['pool_id'] = pool['pool']['id']
             vcns_db.add_vcns_edge_pool_binding(ctx.session, POOL_MAP_INFO)
@@ -233,7 +231,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_delete_vip(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as pool:
+        with self.pool(do_delete=False) as pool:
             self.pool_id = pool['pool']['id']
             POOL_MAP_INFO['pool_id'] = pool['pool']['id']
             vcns_db.add_vcns_edge_pool_binding(ctx.session, POOL_MAP_INFO)
@@ -249,7 +247,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
     #Test Pool Operation
     def test_create_and_get_pool(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as p:
+        with self.pool(do_delete=False) as p:
             self.pool_id = p['pool']['id']
             pool_create = p['pool']
             self.driver.create_pool(ctx, VSE_ID, pool_create, [])
@@ -259,7 +257,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_create_two_pools_with_same_name(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as p:
+        with self.pool(do_delete=False) as p:
             self.pool_id = p['pool']['id']
             pool_create = p['pool']
             self.driver.create_pool(ctx, VSE_ID, pool_create, [])
@@ -269,7 +267,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_update_pool(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as p:
+        with self.pool(do_delete=False) as p:
             self.pool_id = p['pool']['id']
             pool_create = p['pool']
             self.driver.create_pool(ctx, VSE_ID, pool_create, [])
@@ -286,7 +284,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_delete_pool(self):
         ctx = context.get_admin_context()
-        with self.pool(no_delete=True) as p:
+        with self.pool(do_delete=False) as p:
             self.pool_id = p['pool']['id']
             pool_create = p['pool']
             self.driver.create_pool(ctx, VSE_ID, pool_create, [])
@@ -299,7 +297,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_create_and_get_monitor(self):
         ctx = context.get_admin_context()
-        with self.health_monitor(no_delete=True) as m:
+        with self.health_monitor(do_delete=False) as m:
             monitor_create = m['health_monitor']
             self.driver.create_health_monitor(ctx, VSE_ID, monitor_create)
             monitor_get = self.driver.get_health_monitor(
@@ -309,7 +307,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_update_health_monitor(self):
         ctx = context.get_admin_context()
-        with self.health_monitor(no_delete=True) as m:
+        with self.health_monitor(do_delete=False) as m:
             monitor_create = m['health_monitor']
             self.driver.create_health_monitor(
                 ctx, VSE_ID, monitor_create)
@@ -328,7 +326,7 @@ class TestEdgeLbDriver(VcnsDriverTestCase):
 
     def test_delete_health_monitor(self):
         ctx = context.get_admin_context()
-        with self.health_monitor(no_delete=True) as m:
+        with self.health_monitor(do_delete=False) as m:
             monitor_create = m['health_monitor']
             self.driver.create_health_monitor(ctx, VSE_ID, monitor_create)
             self.driver.delete_health_monitor(

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright (c) 2013 OpenStack Foundation
 # All Rights Reserved.
 #
@@ -14,15 +12,11 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Sumit Naiksatam, sumitnaiksatam@gmail.com, Big Switch Networks, Inc.
-# @author: Sridar Kandaswamy, skandasw@cisco.com, Cisco Systems, Inc.
-# @author: Dan Florea, dflorea@cisco.com, Cisco Systems, Inc.
 
 from oslo.config import cfg
 
+from neutron.common import rpc as n_rpc
 from neutron.openstack.common import log as logging
-from neutron.openstack.common.rpc import proxy
 
 LOG = logging.getLogger(__name__)
 
@@ -39,7 +33,7 @@ FWaaSOpts = [
 cfg.CONF.register_opts(FWaaSOpts, 'fwaas')
 
 
-class FWaaSPluginApiMixin(proxy.RpcProxy):
+class FWaaSPluginApiMixin(n_rpc.RpcProxy):
     """Agent side of the FWaaS agent to FWaaS Plugin RPC API."""
 
     RPC_API_VERSION = '1.0'
@@ -54,15 +48,13 @@ class FWaaSPluginApiMixin(proxy.RpcProxy):
         """Make a RPC to set the status of a firewall."""
         return self.call(context,
                          self.make_msg('set_firewall_status', host=self.host,
-                                       firewall_id=firewall_id, status=status),
-                         topic=self.topic)
+                                       firewall_id=firewall_id, status=status))
 
     def firewall_deleted(self, context, firewall_id):
         """Make a RPC to indicate that the firewall resources are deleted."""
         return self.call(context,
                          self.make_msg('firewall_deleted', host=self.host,
-                                       firewall_id=firewall_id),
-                         topic=self.topic)
+                                       firewall_id=firewall_id))
 
 
 class FWaaSAgentRpcCallbackMixin(object):

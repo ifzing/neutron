@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013, Nachi Ueno, NTT I3, Inc.
 # All Rights Reserved.
 #
@@ -20,6 +18,7 @@ from oslo.config import cfg
 
 from neutron.agent.common import config as agent_config
 from neutron.agent import l3_agent
+from neutron.agent import l3_ha_agent
 from neutron.agent.linux import interface
 from neutron.common import config as base_config
 from neutron.openstack.common import uuidutils
@@ -50,6 +49,7 @@ class TestVPNAgent(base.BaseTestCase):
         self.conf = cfg.CONF
         self.conf.register_opts(base_config.core_opts)
         self.conf.register_opts(l3_agent.L3NATAgent.OPTS)
+        self.conf.register_opts(l3_ha_agent.OPTS)
         self.conf.register_opts(interface.OPTS)
         agent_config.register_interface_driver_opts_helper(self.conf)
         agent_config.register_use_namespaces_opts_helper(self.conf)
@@ -73,7 +73,7 @@ class TestVPNAgent(base.BaseTestCase):
 
         l3pluginApi_cls = mock.patch(
             'neutron.agent.l3_agent.L3PluginApi').start()
-        self.plugin_api = mock.Mock()
+        self.plugin_api = mock.MagicMock()
         l3pluginApi_cls.return_value = self.plugin_api
 
         looping_call_p = mock.patch(
@@ -94,7 +94,7 @@ class TestVPNAgent(base.BaseTestCase):
     def test_get_namespace(self):
         router_id = _uuid()
         ri = l3_agent.RouterInfo(router_id, self.conf.root_helper,
-                                 self.conf.use_namespaces, None)
+                                 self.conf.use_namespaces, {})
         self.agent.router_info = {router_id: ri}
         namespace = self.agent.get_namespace(router_id)
         self.assertTrue(namespace.endswith(router_id))
@@ -103,7 +103,7 @@ class TestVPNAgent(base.BaseTestCase):
     def test_add_nat_rule(self):
         router_id = _uuid()
         ri = l3_agent.RouterInfo(router_id, self.conf.root_helper,
-                                 self.conf.use_namespaces, None)
+                                 self.conf.use_namespaces, {})
         iptables = mock.Mock()
         ri.iptables_manager.ipv4['nat'] = iptables
         self.agent.router_info = {router_id: ri}
@@ -123,13 +123,13 @@ class TestVPNAgent(base.BaseTestCase):
     def test_remove_rule(self):
         router_id = _uuid()
         ri = l3_agent.RouterInfo(router_id, self.conf.root_helper,
-                                 self.conf.use_namespaces, None)
+                                 self.conf.use_namespaces, {})
         iptables = mock.Mock()
         ri.iptables_manager.ipv4['nat'] = iptables
         self.agent.router_info = {router_id: ri}
-        self.agent.remove_nat_rule(router_id, 'fake_chain', 'fake_rule')
+        self.agent.remove_nat_rule(router_id, 'fake_chain', 'fake_rule', True)
         iptables.remove_rule.assert_called_once_with(
-            'fake_chain', 'fake_rule')
+            'fake_chain', 'fake_rule', top=True)
 
     def test_remove_rule_with_no_router(self):
         self.agent.router_info = {}
@@ -142,7 +142,7 @@ class TestVPNAgent(base.BaseTestCase):
     def test_iptables_apply(self):
         router_id = _uuid()
         ri = l3_agent.RouterInfo(router_id, self.conf.root_helper,
-                                 self.conf.use_namespaces, None)
+                                 self.conf.use_namespaces, {})
         iptables = mock.Mock()
         ri.iptables_manager = iptables
         self.agent.router_info = {router_id: ri}
@@ -170,12 +170,13 @@ class TestVPNAgent(base.BaseTestCase):
             'neutron.agent.linux.iptables_manager.IptablesManager').start()
         router_id = _uuid()
         ri = l3_agent.RouterInfo(router_id, self.conf.root_helper,
-                                 self.conf.use_namespaces, None)
+                                 self.conf.use_namespaces, {})
         ri.router = {
             'id': _uuid(),
             'admin_state_up': True,
             'routes': [],
-            'external_gateway_info': {}}
+            'external_gateway_info': {},
+            'distributed': False}
         device = mock.Mock()
         self.agent.router_info = {router_id: ri}
         self.agent.devices = [device]

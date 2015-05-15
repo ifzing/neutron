@@ -61,8 +61,7 @@ class LBaaSAgentSchedulerTestCase(test_agent_ext_plugin.AgentDBTestMixIn,
                                   test_db_loadbalancer.LoadBalancerTestMixin,
                                   test_plugin.NeutronDbPluginV2TestCase):
     fmt = 'json'
-    plugin_str = ('neutron.plugins.openvswitch.'
-                  'ovs_neutron_plugin.OVSNeutronPluginV2')
+    plugin_str = 'neutron.plugins.ml2.plugin.Ml2Plugin'
 
     def setUp(self):
         # Save the global RESOURCE_ATTRIBUTE_MAP
@@ -186,7 +185,7 @@ class LBaaSAgentSchedulerTestCase(test_agent_ext_plugin.AgentDBTestMixIn,
 
     def test_pool_unscheduling_on_pool_deletion(self):
         self._register_agent_states(lbaas_agents=True)
-        with self.pool(no_delete=True) as pool:
+        with self.pool(do_delete=False) as pool:
             lbaas_agent = self._get_lbaas_agent_hosting_pool(
                 pool['pool']['id'])
             self.assertIsNotNone(lbaas_agent)

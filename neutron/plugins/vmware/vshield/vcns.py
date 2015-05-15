@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 VMware, Inc
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,8 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: linb, VMware
 
 from neutron.openstack.common import jsonutils
 from neutron.openstack.common import log as logging
@@ -53,7 +49,7 @@ class Vcns(object):
                                                           password, 'json')
 
     def do_request(self, method, uri, params=None, format='json', **kwargs):
-        LOG.debug(_("VcnsApiHelper('%(method)s', '%(uri)s', '%(body)s')"), {
+        LOG.debug("VcnsApiHelper('%(method)s', '%(uri)s', '%(body)s')", {
                   'method': method,
                   'uri': uri,
                   'body': jsonutils.dumps(params)})
@@ -61,8 +57,8 @@ class Vcns(object):
             header, content = self.jsonapi_client.request(method, uri, params)
         else:
             header, content = self.xmlapi_client.request(method, uri, params)
-        LOG.debug(_("Header: '%s'"), header)
-        LOG.debug(_("Content: '%s'"), content)
+        LOG.debug("Header: '%s'", header)
+        LOG.debug("Content: '%s'", content)
         if content == '':
             return header, {}
         if kwargs.get('decode', True):

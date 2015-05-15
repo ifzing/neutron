@@ -20,13 +20,13 @@ Routines for configuring Neutron
 import os
 
 from oslo.config import cfg
+from oslo.db import options as db_options
+from oslo import messaging
 from paste import deploy
 
 from neutron.api.v2 import attributes
 from neutron.common import utils
-from neutron.openstack.common.db import options as db_options
 from neutron.openstack.common import log as logging
-from neutron.openstack.common import rpc
 from neutron import version
 
 
@@ -71,7 +71,8 @@ core_opts = [
                help=_("Maximum number of fixed ips per port")),
     cfg.IntOpt('dhcp_lease_duration', default=86400,
                deprecated_name='dhcp_lease_time',
-               help=_("DHCP lease duration")),
+               help=_("DHCP lease duration (in seconds). Use -1 to tell "
+                      "dnsmasq to use infinite lease times.")),
     cfg.BoolOpt('dhcp_agent_notification', default=True,
                 help=_("Allow sending resource operation"
                        " notification to DHCP agent")),
@@ -79,8 +80,12 @@ core_opts = [
                 help=_("Allow overlapping IP support in Neutron")),
     cfg.StrOpt('host', default=utils.get_hostname(),
                help=_("The hostname Neutron is running on")),
-    cfg.BoolOpt('force_gateway_on_subnet', default=False,
-                help=_("Ensure that configured gateway is on subnet")),
+    cfg.BoolOpt('force_gateway_on_subnet', default=True,
+                help=_("Ensure that configured gateway is on subnet. "
+                       "For IPv6, validate only if gateway is not a link "
+                       "local address. Deprecated, to be removed during the "
+                       "K release, at which point the check will be "
+                       "mandatory.")),
     cfg.BoolOpt('notify_nova_on_port_status_changes', default=True,
                 help=_("Send notification to nova when port status changes")),
     cfg.BoolOpt('notify_nova_on_port_data_changes', default=True,
@@ -124,18 +129,25 @@ cfg.CONF.register_opts(core_opts)
 cfg.CONF.register_cli_opts(core_cli_opts)
 
 # Ensure that the control exchange is set correctly
-rpc.set_defaults(control_exchange='neutron')
+messaging.set_transport_defaults(control_exchange='neutron')
 _SQL_CONNECTION_DEFAULT = 'sqlite://'
 # Update the default QueuePool parameters. These can be tweaked by the
 # configuration variables - max_pool_size, max_overflow and pool_timeout
-db_options.set_defaults(sql_connection=_SQL_CONNECTION_DEFAULT,
+db_options.set_defaults(cfg.CONF,
+                        connection=_SQL_CONNECTION_DEFAULT,
                         sqlite_db='', max_pool_size=10,
                         max_overflow=20, pool_timeout=10)
 
 
-def parse(args):
+def init(args, **kwargs):
     cfg.CONF(args=args, project='neutron',
-             version='%%prog %s' % version.version_info.release_string())
+             version='%%prog %s' % version.version_info.release_string(),
+             **kwargs)
+
+    # FIXME(ihrachys): if import is put in global, circular import
+    # failure occurs
+    from neutron.common import rpc as n_rpc
+    n_rpc.init(cfg.CONF)
 
     # Validate that the base_mac is of the correct format
     msg = attributes._validate_regex(cfg.CONF.base_mac,
@@ -145,11 +157,8 @@ def parse(args):
         raise Exception(msg)
 
 
-def setup_logging(conf):
-    """Sets up the logging options for a log with supplied name.
-
-    :param conf: a cfg.ConfOpts object
-    """
+def setup_logging():
+    """Sets up the logging options for a log with supplied name."""
     product_name = "neutron"
     logging.setup(product_name)
     LOG.info(_("Logging enabled!"))

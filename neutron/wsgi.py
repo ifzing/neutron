@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2011 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -30,7 +28,7 @@ from xml.etree import ElementTree as etree
 from xml.parsers import expat
 
 import eventlet.wsgi
-eventlet.patcher.monkey_patch(all=False, socket=True)
+eventlet.patcher.monkey_patch(all=False, socket=True, thread=True)
 from oslo.config import cfg
 import routes.middleware
 import webob.dec
@@ -45,6 +43,7 @@ from neutron.openstack.common import gettextutils
 from neutron.openstack.common import jsonutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import service as common_service
+from neutron.openstack.common import systemd
 
 socket_opts = [
     cfg.IntOpt('backlog',
@@ -73,6 +72,18 @@ socket_opts = [
     cfg.StrOpt('ssl_key_file',
                help=_("Private key file to use when starting "
                       "the server securely")),
+    cfg.BoolOpt('wsgi_keep_alive',
+                default=True,
+                help=_("Determines if connections are allowed to be held "
+                     "open by clients after a request is fulfilled. A value "
+                     "of False will ensure that the socket connection will "
+                     "be explicitly closed once a response has been sent to "
+                     "the client.")),
+    cfg.IntOpt('client_socket_timeout', default=900,
+               help=_("Timeout for client connections socket operations. "
+                    "If an incoming connection is idle for this number of "
+                    "seconds it will be closed. A value of '0' means "
+                    "wait forever.")),
 ]
 
 CONF = cfg.CONF
@@ -98,7 +109,8 @@ class WorkerService(object):
                                                 self._service._socket)
 
     def wait(self):
-        self._service.pool.waitall()
+        if isinstance(self._server, eventlet.greenthread.GreenThread):
+            self._server.wait()
 
     def stop(self):
         if isinstance(self._server, eventlet.greenthread.GreenThread):
@@ -114,8 +126,10 @@ class Server(object):
         eventlet.wsgi.MAX_HEADER_LINE = CONF.max_header_line
         self.pool = eventlet.GreenPool(threads)
         self.name = name
-        self._launcher = None
         self._server = None
+        # A value of 0 is converted to None because None is what causes the
+        # wsgi server to wait forever.
+        self.client_socket_timeout = CONF.client_socket_timeout or None
 
     def _get_socket(self, host, port, backlog):
         bind_addr = (host, port)
@@ -206,16 +220,22 @@ class Server(object):
         self._socket = self._get_socket(self._host,
                                         self._port,
                                         backlog=backlog)
+
+        self._launch(application, workers)
+
+    def _launch(self, application, workers=0):
+        service = WorkerService(self, application)
         if workers < 1:
-            # For the case where only one process is required.
-            self._server = self.pool.spawn(self._run, application,
-                                           self._socket)
+            # The API service should run in the current process.
+            self._server = service
+            service.start()
+            systemd.notify_once()
         else:
+            # The API service runs in a number of child processes.
             # Minimize the cost of checking for child exit by extending the
             # wait interval past the default of 0.01s.
-            self._launcher = common_service.ProcessLauncher(wait_interval=1.0)
-            self._server = WorkerService(self, application)
-            self._launcher.launch_service(self._server, workers=workers)
+            self._server = common_service.ProcessLauncher(wait_interval=1.0)
+            self._server.launch_service(service, workers=workers)
 
     @property
     def host(self):
@@ -226,26 +246,21 @@ class Server(object):
         return self._socket.getsockname()[1] if self._socket else self._port
 
     def stop(self):
-        if self._launcher:
-            # The process launcher does not support stop or kill.
-            self._launcher.running = False
-        else:
-            self._server.kill()
+        self._server.stop()
 
     def wait(self):
         """Wait until all servers have completed running."""
         try:
-            if self._launcher:
-                self._launcher.wait()
-            else:
-                self.pool.waitall()
+            self._server.wait()
         except KeyboardInterrupt:
             pass
 
     def _run(self, application, socket):
         """Start a WSGI server in a new green thread."""
         eventlet.wsgi.server(socket, application, custom_pool=self.pool,
-                             log=logging.WritableLogger(LOG))
+                             log=logging.WritableLogger(LOG),
+                             keepalive=CONF.wsgi_keep_alive,
+                             socket_timeout=self.client_socket_timeout)
 
 
 class Middleware(object):

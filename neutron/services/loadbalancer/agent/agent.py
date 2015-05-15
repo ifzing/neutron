@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 New Dream Network, LLC (DreamHost)
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,16 +11,19 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mark McClain, DreamHost
+
+import sys
 
 import eventlet
+eventlet.monkey_patch()
+
 from oslo.config import cfg
 
 from neutron.agent.common import config
 from neutron.agent.linux import interface
+from neutron.common import config as common_config
+from neutron.common import rpc as n_rpc
 from neutron.common import topics
-from neutron.openstack.common.rpc import service as rpc_service
 from neutron.openstack.common import service
 from neutron.services.loadbalancer.agent import agent_manager as manager
 
@@ -35,7 +36,7 @@ OPTS = [
 ]
 
 
-class LbaasAgentService(rpc_service.Service):
+class LbaasAgentService(n_rpc.Service):
     def start(self):
         super(LbaasAgentService, self).start()
         self.tg.add_timer(
@@ -47,7 +48,6 @@ class LbaasAgentService(rpc_service.Service):
 
 
 def main():
-    eventlet.monkey_patch()
     cfg.CONF.register_opts(OPTS)
     cfg.CONF.register_opts(manager.OPTS)
     # import interface options just in case the driver uses namespaces
@@ -56,8 +56,8 @@ def main():
     config.register_agent_state_opts_helper(cfg.CONF)
     config.register_root_helper(cfg.CONF)
 
-    cfg.CONF(project='neutron')
-    config.setup_logging(cfg.CONF)
+    common_config.init(sys.argv[1:])
+    config.setup_logging()
 
     mgr = manager.LbaasAgentManager(cfg.CONF)
     svc = LbaasAgentService(

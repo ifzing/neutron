@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 New Dream Network, LLC (DreamHost)
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,8 +11,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mark McClain, DreamHost
+
 import os
 import shutil
 import socket
@@ -46,13 +43,14 @@ OPTS = [
         'loadbalancer_state_path',
         default=STATE_PATH_DEFAULT,
         help=_('Location to store config and state files'),
-        deprecated_opts=[cfg.DeprecatedOpt('loadbalancer_state_path')],
+        deprecated_opts=[cfg.DeprecatedOpt('loadbalancer_state_path',
+                                           group='DEFAULT')],
     ),
     cfg.StrOpt(
         'user_group',
         default=USER_GROUP_DEFAULT,
         help=_('The user group'),
-        deprecated_opts=[cfg.DeprecatedOpt('user_group')],
+        deprecated_opts=[cfg.DeprecatedOpt('user_group', group='DEFAULT')],
     ),
     cfg.IntOpt(
         'send_gratuitous_arp',
@@ -75,7 +73,7 @@ class HaproxyNSDriver(agent_device_driver.AgentDeviceDriver):
         except ImportError:
             with excutils.save_and_reraise_exception():
                 msg = (_('Error importing interface driver: %s')
-                       % conf.haproxy.interface_driver)
+                       % conf.interface_driver)
                 LOG.error(msg)
 
         self.vif_driver = vif_driver
@@ -148,7 +146,7 @@ class HaproxyNSDriver(agent_device_driver.AgentDeviceDriver):
         namespace = get_ns_name(pool_id)
         root_ns = ip_lib.IPWrapper(self.root_helper)
 
-        socket_path = self._get_state_file_path(pool_id, 'sock')
+        socket_path = self._get_state_file_path(pool_id, 'sock', False)
         if root_ns.netns.exists(namespace) and os.path.exists(socket_path):
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -159,7 +157,7 @@ class HaproxyNSDriver(agent_device_driver.AgentDeviceDriver):
         return False
 
     def get_stats(self, pool_id):
-        socket_path = self._get_state_file_path(pool_id, 'sock')
+        socket_path = self._get_state_file_path(pool_id, 'sock', False)
         TYPE_BACKEND_REQUEST = 2
         TYPE_SERVER_REQUEST = 4
         if os.path.exists(socket_path):

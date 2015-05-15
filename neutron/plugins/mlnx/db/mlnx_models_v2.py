@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 Mellanox Technologies, Ltd
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +14,7 @@
 # limitations under the License.
 
 import sqlalchemy as sa
+from sqlalchemy import sql
 
 from neutron.db import model_base
 
@@ -28,7 +27,8 @@ class SegmentationIdAllocation(model_base.BASEV2):
                                  primary_key=True)
     segmentation_id = sa.Column(sa.Integer, nullable=False, primary_key=True,
                                 autoincrement=False)
-    allocated = sa.Column(sa.Boolean, nullable=False, default=False)
+    allocated = sa.Column(sa.Boolean, nullable=False, default=False,
+                          server_default=sql.false())
 
     def __init__(self, physical_network, segmentation_id):
         self.physical_network = physical_network
@@ -82,5 +82,5 @@ class PortProfileBinding(model_base.BASEV2):
         self.vnic_type = vnic_type
 
     def __repr__(self):
-        return "<PortProfileBinding(%s,%s,%s,%d)>" % (self.port_id,
-                                                      self.vnic_type)
+        return "<PortProfileBinding(%s,%s)>" % (self.port_id,
+                                                self.vnic_type)

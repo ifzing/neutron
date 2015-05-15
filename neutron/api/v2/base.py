@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright (c) 2012 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -27,8 +25,9 @@ from neutron.api.v2 import attributes
 from neutron.api.v2 import resource as wsgi_resource
 from neutron.common import constants as const
 from neutron.common import exceptions
+from neutron.common import rpc as n_rpc
+from neutron.openstack.common import excutils
 from neutron.openstack.common import log as logging
-from neutron.openstack.common.notifier import api as notifier_api
 from neutron import policy
 from neutron import quota
 
@@ -69,7 +68,7 @@ class Controller(object):
         self._native_sorting = self._is_native_sorting_supported()
         self._policy_attrs = [name for (name, info) in self._attr_info.items()
                               if info.get('required_by_policy')]
-        self._publisher_id = notifier_api.publisher_id('network')
+        self._notifier = n_rpc.get_notifier('network')
         # use plugin's dhcp notifier, if this is already instantiated
         agent_notifiers = getattr(plugin, 'agent_notifiers', {})
         self._dhcp_agent_notifier = (
@@ -141,7 +140,7 @@ class Controller(object):
                 if policy.check(
                     context,
                     '%s:%s' % (self._plugin_handlers[self.SHOW], attr_name),
-                    None,
+                    data,
                     might_not_exist=True):
                     # this attribute is visible, check next one
                     continue
@@ -201,7 +200,7 @@ class Controller(object):
                 return getattr(self._plugin, name)(*arg_list, **kwargs)
             return _handle_action
         else:
-            raise AttributeError
+            raise AttributeError()
 
     def _get_pagination_helper(self, request):
         if self._allow_pagination and self._native_pagination:
@@ -372,10 +371,8 @@ class Controller(object):
     def create(self, request, body=None, **kwargs):
         """Creates a new instance of the requested entity."""
         parent_id = kwargs.get(self._parent_id_name)
-        notifier_api.notify(request.context,
-                            self._publisher_id,
+        self._notifier.info(request.context,
                             self._resource + '.create.start',
-                            notifier_api.CONF.default_notification_level,
                             body)
         body = Controller.prepare_request_body(request.context, body, True,
                                                self._resource, self._attr_info,
@@ -419,10 +416,8 @@ class Controller(object):
 
         def notify(create_result):
             notifier_method = self._resource + '.create.end'
-            notifier_api.notify(request.context,
-                                self._publisher_id,
+            self._notifier.info(request.context,
                                 notifier_method,
-                                notifier_api.CONF.default_notification_level,
                                 create_result)
             self._send_dhcp_notification(request.context,
                                          create_result,
@@ -458,10 +453,8 @@ class Controller(object):
 
     def delete(self, request, id, **kwargs):
         """Deletes the specified entity."""
-        notifier_api.notify(request.context,
-                            self._publisher_id,
+        self._notifier.info(request.context,
                             self._resource + '.delete.start',
-                            notifier_api.CONF.default_notification_level,
                             {self._resource + '_id': id})
         action = self._plugin_handlers[self.DELETE]
 
@@ -482,10 +475,8 @@ class Controller(object):
         obj_deleter = getattr(self._plugin, action)
         obj_deleter(request.context, id, **kwargs)
         notifier_method = self._resource + '.delete.end'
-        notifier_api.notify(request.context,
-                            self._publisher_id,
+        self._notifier.info(request.context,
                             notifier_method,
-                            notifier_api.CONF.default_notification_level,
                             {self._resource + '_id': id})
         result = {self._resource: self._view(request.context, obj)}
         self._send_nova_notification(action, {}, result)
@@ -502,10 +493,8 @@ class Controller(object):
             msg = _("Invalid format: %s") % request.body
             raise exceptions.BadRequest(resource='body', msg=msg)
         payload['id'] = id
-        notifier_api.notify(request.context,
-                            self._publisher_id,
+        self._notifier.info(request.context,
                             self._resource + '.update.start',
-                            notifier_api.CONF.default_notification_level,
                             payload)
         body = Controller.prepare_request_body(request.context, body, False,
                                                self._resource, self._attr_info,
@@ -524,13 +513,21 @@ class Controller(object):
                               parent_id=parent_id)
         orig_object_copy = copy.copy(orig_obj)
         orig_obj.update(body[self._resource])
+        # Make a list of attributes to be updated to inform the policy engine
+        # which attributes are set explicitly so that it can distinguish them
+        # from the ones that are set to their default values.
+        orig_obj[const.ATTRIBUTES_TO_UPDATE] = body[self._resource].keys()
         try:
             policy.enforce(request.context,
                            action,
                            orig_obj)
         except exceptions.PolicyNotAuthorized:
-            # To avoid giving away information, pretend that it
-            # doesn't exist
+            with excutils.save_and_reraise_exception() as ctxt:
+                # If a tenant is modifying it's own object, it's safe to return
+                # a 403. Otherwise, pretend that it doesn't exist to avoid
+                # giving away information.
+                if request.context.tenant_id != orig_obj['tenant_id']:
+                    ctxt.reraise = False
             msg = _('The resource could not be found.')
             raise webob.exc.HTTPNotFound(msg)
 
@@ -541,11 +538,7 @@ class Controller(object):
         obj = obj_updater(request.context, id, **kwargs)
         result = {self._resource: self._view(request.context, obj)}
         notifier_method = self._resource + '.update.end'
-        notifier_api.notify(request.context,
-                            self._publisher_id,
-                            notifier_method,
-                            notifier_api.CONF.default_notification_level,
-                            result)
+        self._notifier.info(request.context, notifier_method, result)
         self._send_dhcp_notification(request.context,
                                      result,
                                      notifier_method)
@@ -587,20 +580,18 @@ class Controller(object):
             raise webob.exc.HTTPBadRequest(_("Resource body required"))
 
         LOG.debug(_("Request body: %(body)s"), {'body': body})
-        prep_req_body = lambda x: Controller.prepare_request_body(
-            context,
-            x if resource in x else {resource: x},
-            is_create,
-            resource,
-            attr_info,
-            allow_bulk)
         if collection in body:
             if not allow_bulk:
                 raise webob.exc.HTTPBadRequest(_("Bulk operation "
                                                  "not supported"))
-            bulk_body = [prep_req_body(item) for item in body[collection]]
-            if not bulk_body:
+            if not body[collection]:
                 raise webob.exc.HTTPBadRequest(_("Resources required"))
+            bulk_body = [
+                Controller.prepare_request_body(
+                    context, item if resource in item else {resource: item},
+                    is_create, resource, attr_info, allow_bulk
+                ) for item in body[collection]
+            ]
             return {collection: bulk_body}
 
         res_dict = body.get(resource)

@@ -16,6 +16,10 @@
 import testtools
 
 from neutron.api.v2 import attributes
+from neutron.db import api as db_api
+# Import all data models
+from neutron.db.migration.models import head  # noqa
+from neutron.db import model_base
 from neutron.tests import base
 from neutron import wsgi
 
@@ -49,7 +53,29 @@ def create_request(path, body, content_type, method='GET',
     return req
 
 
-class WebTestCase(base.BaseTestCase):
+class SqlTestCase(base.BaseTestCase):
+
+    # flag to indicate that the models have been loaded
+    _TABLES_ESTABLISHED = False
+
+    def setUp(self):
+        super(SqlTestCase, self).setUp()
+        # Register all data models
+        engine = db_api.get_engine()
+        if not SqlTestCase._TABLES_ESTABLISHED:
+            model_base.BASEV2.metadata.create_all(engine)
+            SqlTestCase._TABLES_ESTABLISHED = True
+
+        def clear_tables():
+            with engine.begin() as conn:
+                for table in reversed(
+                        model_base.BASEV2.metadata.sorted_tables):
+                    conn.execute(table.delete())
+
+        self.addCleanup(clear_tables)
+
+
+class WebTestCase(SqlTestCase):
     fmt = 'json'
 
     def setUp(self):

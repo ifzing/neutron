@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright (c) 2012 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -23,6 +21,10 @@ from neutron.tests import base
 
 
 class TestNetnsCleanup(base.BaseTestCase):
+
+    def setup_config(self):
+        # don't use default config
+        pass
 
     def test_setup_conf(self):
         expected_opts = interface.OPTS

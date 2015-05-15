@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2012 New Dream Network, LLC (DreamHost)
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,13 +11,13 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mark McClain, DreamHost
 
 import httplib
 import socket
 
 import eventlet
+eventlet.monkey_patch()
+
 import httplib2
 from oslo.config import cfg
 import six.moves.urllib.parse as urlparse
@@ -112,6 +110,8 @@ class NetworkMetadataProxyHandler(object):
             response.headers['Content-Type'] = resp['content-type']
             response.body = content
             return response
+        elif resp.status == 400:
+            return webob.exc.HTTPBadRequest()
         elif resp.status == 404:
             return webob.exc.HTTPNotFound()
         elif resp.status == 409:
@@ -144,7 +144,6 @@ class ProxyDaemon(daemon.Daemon):
 
 
 def main():
-    eventlet.monkey_patch()
     opts = [
         cfg.StrOpt('network_id',
                    help=_('Network that will have instance metadata '
@@ -170,7 +169,7 @@ def main():
     cfg.CONF.register_cli_opts(opts)
     # Don't get the default configuration file
     cfg.CONF(project='neutron', default_config_files=[])
-    config.setup_logging(cfg.CONF)
+    config.setup_logging()
     utils.log_opt_values(LOG)
     proxy = ProxyDaemon(cfg.CONF.pid_file,
                         cfg.CONF.metadata_port,

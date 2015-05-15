@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 vArmour Networks Inc.
 # All Rights Reserved.
 #
@@ -14,15 +12,13 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Gary Duan, gduan@varmour.com, vArmour Networks
 
 import base64
 
 import httplib2
 from oslo.config import cfg
 
-from neutron.openstack.common import jsonutils as json
+from neutron.openstack.common import jsonutils
 from neutron.openstack.common import log as logging
 from neutron.services.firewall.agents.varmour import varmour_utils as va_utils
 
@@ -89,7 +85,7 @@ class vArmourRestAPI(object):
     def rest_api(self, method, url, body=None, headers=None):
         url = REST_URL_PREFIX + url
         if body:
-            body_data = json.dumps(body)
+            body_data = jsonutils.dumps(body)
         else:
             body_data = ''
         if not headers:
@@ -120,7 +116,7 @@ class vArmourRestAPI(object):
             if resp.status == 200:
                 return {'status': resp.status,
                         'reason': resp.reason,
-                        'body': json.loads(resp_str)}
+                        'body': jsonutils.loads(resp_str)}
         except Exception:
             LOG.error(_('vArmourRestAPI: Could not establish HTTP connection'))
 

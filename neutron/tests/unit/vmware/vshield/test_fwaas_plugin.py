@@ -187,7 +187,7 @@ class FirewallPluginTestCase(test_db_firewall.FirewallPluginDbTestCase,
                 firewall_policy_id=fwp_id,
                 router_id=self._create_and_get_router(),
                 admin_state_up=test_db_firewall.ADMIN_STATE_UP,
-                no_delete=True) as fw:
+                do_delete=False) as fw:
                 fw_id = fw['firewall']['id']
                 with ctx.session.begin(subtransactions=True):
                     req = self.new_delete_request('firewalls', fw_id)
@@ -196,6 +196,19 @@ class FirewallPluginTestCase(test_db_firewall.FirewallPluginDbTestCase,
                     self.assertRaises(
                         firewall.FirewallNotFound,
                         self.plugin.get_firewall, ctx, fw_id)
+
+    def test_delete_router_in_use_by_fwservice(self):
+        router_id = self._create_and_get_router()
+        with self.firewall_policy() as fwp:
+            fwp_id = fwp['firewall_policy']['id']
+            with self.firewall(name='fw',
+                               firewall_policy_id=fwp_id,
+                               router_id=router_id,
+                               admin_state_up=
+                               test_db_firewall.ADMIN_STATE_UP,
+                               expected_res_status=201):
+                self._delete('routers', router_id,
+                             expected_code=webob.exc.HTTPConflict.code)
 
     def test_show_firewall(self):
         name = "firewall1"
@@ -278,7 +291,7 @@ class FirewallPluginTestCase(test_db_firewall.FirewallPluginDbTestCase,
 
     def test_update_firewall_policy_with_no_firewall(self):
         name = "new_firewall_policy1"
-        attrs = self._get_test_firewall_policy_attrs(name)
+        attrs = self._get_test_firewall_policy_attrs(name, audited=False)
 
         with self.firewall_policy(shared=test_db_firewall.SHARED,
                                   firewall_rules=None,
@@ -292,7 +305,7 @@ class FirewallPluginTestCase(test_db_firewall.FirewallPluginDbTestCase,
 
     def test_update_firewall_policy_with_firewall(self):
         name = "new_firewall_policy1"
-        attrs = self._get_test_firewall_policy_attrs(name)
+        attrs = self._get_test_firewall_policy_attrs(name, audited=False)
 
         with self.firewall_policy(shared=test_db_firewall.SHARED,
                                   firewall_rules=None,
@@ -579,6 +592,55 @@ class FirewallPluginTestCase(test_db_firewall.FirewallPluginDbTestCase,
             with self.firewall(router_id=self._create_and_get_router(),
                                firewall_policy_id=fwp_id) as fw:
                 attrs['firewall_list'].insert(0, fw['firewall']['id'])
+                with contextlib.nested(self.firewall_rule(name='fwr1'),
+                                       self.firewall_rule(name='fwr2'),
+                                       self.firewall_rule(name='fwr3')) as fr1:
+                    fw_rule_ids = [r['firewall_rule']['id'] for r in fr1]
+                    attrs['firewall_rules'] = fw_rule_ids[:]
+                    data = {'firewall_policy':
+                            {'firewall_rules': fw_rule_ids}}
+                    req = self.new_update_request(
+                        'firewall_policies', data, fwp_id)
+                    req.get_response(self.ext_api)
+                    # test removing a rule from a policy that does not exist
+                    self._rule_action(
+                        'remove', '123',
+                        fw_rule_ids[1],
+                        expected_code=webob.exc.HTTPNotFound.code,
+                        expected_body=None)
+                    # test removing a rule in the middle of the list
+                    attrs['firewall_rules'].remove(fw_rule_ids[1])
+                    self._rule_action('remove', fwp_id, fw_rule_ids[1],
+                                      expected_body=attrs)
+                    # test removing a rule at the top of the list
+                    attrs['firewall_rules'].remove(fw_rule_ids[0])
+                    self._rule_action('remove', fwp_id, fw_rule_ids[0],
+                                      expected_body=attrs)
+                    # test removing remaining rule in the list
+                    attrs['firewall_rules'].remove(fw_rule_ids[2])
+                    self._rule_action('remove', fwp_id, fw_rule_ids[2],
+                                      expected_body=attrs)
+                    # test removing rule that is not
+                    #associated with the policy
+                    self._rule_action(
+                        'remove', fwp_id, fw_rule_ids[2],
+                        expected_code=webob.exc.HTTPBadRequest.code,
+                        expected_body=None)
+
+    def test_remove_rule_with_firewalls(self):
+        attrs = self._get_test_firewall_policy_attrs()
+        attrs['audited'] = False
+        attrs['firewall_list'] = []
+        with self.firewall_policy() as fwp:
+            fwp_id = fwp['firewall_policy']['id']
+            attrs['id'] = fwp_id
+            with contextlib.nested(
+                self.firewall(router_id=self._create_and_get_router(),
+                              firewall_policy_id=fwp_id),
+                self.firewall(router_id=self._create_and_get_router(),
+                              firewall_policy_id=fwp_id)) as (fw1, fw2):
+                attrs['firewall_list'].insert(0, fw1['firewall']['id'])
+                attrs['firewall_list'].insert(1, fw2['firewall']['id'])
                 with contextlib.nested(self.firewall_rule(name='fwr1'),
                                        self.firewall_rule(name='fwr2'),
                                        self.firewall_rule(name='fwr3')) as fr1:

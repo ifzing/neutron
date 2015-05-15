@@ -103,7 +103,7 @@ class DuplicateSecurityGroupRuleInPost(qexception.InUse):
 
 
 class SecurityGroupRuleExists(qexception.InUse):
-    message = _("Security group rule already exists. Group id is %(id)s.")
+    message = _("Security group rule already exists. Rule id is %(id)s.")
 
 
 class SecurityGroupRuleParameterConflict(qexception.InvalidInput):
@@ -116,7 +116,10 @@ def convert_protocol(value):
     try:
         val = int(value)
         if val >= 0 and val <= 255:
-            return val
+            # Set value of protocol number to string due to bug 1381379,
+            # PostgreSQL fails when it tries to compare integer with string,
+            # that exists in db.
+            return str(value)
         raise SecurityGroupRuleInvalidProtocol(
             protocol=value, values=sg_supported_protocols)
     except (ValueError, TypeError):

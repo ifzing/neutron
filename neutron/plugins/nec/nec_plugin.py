@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2012-2013 NEC Corporation.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,24 +11,23 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-# @author: Ryota MIBU
-# @author: Akihiro MOTOKI
 
 from neutron.agent import securitygroups_rpc as sg_rpc
 from neutron.api import extensions as neutron_extensions
 from neutron.api.rpc.agentnotifiers import dhcp_rpc_agent_api
+from neutron.api.rpc.handlers import dhcp_rpc
+from neutron.api.rpc.handlers import l3_rpc
+from neutron.api.rpc.handlers import securitygroups_rpc
 from neutron.api.v2 import attributes as attrs
 from neutron.common import constants as const
 from neutron.common import exceptions as n_exc
-from neutron.common import rpc as q_rpc
+from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.db import agents_db
 from neutron.db import agentschedulers_db
 from neutron.db import allowedaddresspairs_db as addr_pair_db
 from neutron.db import db_base_plugin_v2
-from neutron.db import dhcp_rpc_base
 from neutron.db import external_net_db
-from neutron.db import l3_rpc_base
 from neutron.db import portbindings_base
 from neutron.db import portbindings_db
 from neutron.db import quota_db  # noqa
@@ -40,8 +37,6 @@ from neutron.extensions import portbindings
 from neutron.openstack.common import excutils
 from neutron.openstack.common import importutils
 from neutron.openstack.common import log as logging
-from neutron.openstack.common import rpc
-from neutron.openstack.common.rpc import proxy
 from neutron.openstack.common import uuidutils
 from neutron.plugins.common import constants as svc_constants
 from neutron.plugins.nec.common import config
@@ -57,10 +52,23 @@ from neutron.plugins.nec import packet_filter
 LOG = logging.getLogger(__name__)
 
 
+class SecurityGroupServerRpcMixin(sg_db_rpc.SecurityGroupServerRpcMixin):
+
+    @staticmethod
+    def get_port_from_device(device):
+        port = ndb.get_port_from_device(device)
+        if port:
+            port['device'] = device
+        LOG.debug("NECPluginV2.get_port_from_device() called, "
+                  "device=%(device)s => %(ret)s.",
+                  {'device': device, 'ret': port})
+        return port
+
+
 class NECPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
                   external_net_db.External_net_db_mixin,
                   nec_router.RouterMixin,
-                  sg_db_rpc.SecurityGroupServerRpcMixin,
+                  SecurityGroupServerRpcMixin,
                   agentschedulers_db.DhcpAgentSchedulerDbMixin,
                   nec_router.L3AgentSchedulerDbMixin,
                   packet_filter.PacketFilterMixin,
@@ -137,7 +145,7 @@ class NECPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
     def setup_rpc(self):
         self.service_topics = {svc_constants.CORE: topics.PLUGIN,
                                svc_constants.L3_ROUTER_NAT: topics.L3PLUGIN}
-        self.conn = rpc.create_connection(new=True)
+        self.conn = n_rpc.create_connection(new=True)
         self.notifier = NECPluginV2AgentNotifierApi(topics.AGENT)
         self.agent_notifiers[const.AGENT_TYPE_DHCP] = (
             dhcp_rpc_agent_api.DhcpAgentNotifyAPI()
@@ -147,17 +155,17 @@ class NECPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
         )
 
         # NOTE: callback_sg is referred to from the sg unit test.
-        self.callback_sg = SecurityGroupServerRpcCallback()
-        callbacks = [NECPluginV2RPCCallbacks(self.safe_reference),
-                     DhcpRpcCallback(),
-                     L3RpcCallback(),
-                     self.callback_sg,
-                     agents_db.AgentExtRpcCallback()]
-        self.dispatcher = q_rpc.PluginRpcDispatcher(callbacks)
+        self.callback_sg = securitygroups_rpc.SecurityGroupServerRpcCallback()
+        self.endpoints = [
+            NECPluginV2RPCCallbacks(self.safe_reference),
+            dhcp_rpc.DhcpRpcCallback(),
+            l3_rpc.L3RpcCallback(),
+            self.callback_sg,
+            agents_db.AgentExtRpcCallback()]
         for svc_topic in self.service_topics.values():
-            self.conn.create_consumer(svc_topic, self.dispatcher, fanout=False)
-        # Consume from all consumers in a thread
-        self.conn.consume_in_thread()
+            self.conn.create_consumer(svc_topic, self.endpoints, fanout=False)
+        # Consume from all consumers in threads
+        self.conn.consume_in_threads()
 
     def _update_resource_status(self, context, resource, id, status):
         """Update status of specified resource."""
@@ -413,15 +421,11 @@ class NECPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
         self._cleanup_ofc_tenant(context, tenant_id)
 
     def _get_base_binding_dict(self):
-        binding = {
-            portbindings.VIF_TYPE: portbindings.VIF_TYPE_OVS,
-            portbindings.VIF_DETAILS: {
-                # TODO(rkukura): Replace with new VIF security details
-                portbindings.CAP_PORT_FILTER:
-                'security-group' in self.supported_extension_aliases,
-                portbindings.OVS_HYBRID_PLUG: True
-            }
-        }
+        sg_enabled = sg_rpc.is_firewall_enabled()
+        vif_details = {portbindings.CAP_PORT_FILTER: sg_enabled,
+                       portbindings.OVS_HYBRID_PLUG: sg_enabled}
+        binding = {portbindings.VIF_TYPE: portbindings.VIF_TYPE_OVS,
+                   portbindings.VIF_DETAILS: vif_details}
         return binding
 
     def _extend_port_dict_binding_portinfo(self, port_res, portinfo):
@@ -655,13 +659,17 @@ class NECPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
         if l3_port_check:
             self.prevent_l3_port_deletion(context, id)
         with context.session.begin(subtransactions=True):
-            self.disassociate_floatingips(context, id)
+            router_ids = self.disassociate_floatingips(
+                context, id, do_notify=False)
             self._delete_port_security_group_bindings(context, id)
             super(NECPluginV2, self).delete_port(context, id)
+
+        # now that we've left db transaction, we are safe to notify
+        self.notify_routers_updated(context, router_ids)
         self.notify_security_groups_member_updated(context, port)
 
 
-class NECPluginV2AgentNotifierApi(proxy.RpcProxy,
+class NECPluginV2AgentNotifierApi(n_rpc.RpcProxy,
                                   sg_rpc.SecurityGroupAgentRpcApiMixin):
     '''RPC API for NEC plugin agent.'''
 
@@ -680,47 +688,13 @@ class NECPluginV2AgentNotifierApi(proxy.RpcProxy,
                          topic=self.topic_port_update)
 
 
-class DhcpRpcCallback(dhcp_rpc_base.DhcpRpcCallbackMixin):
-    # DhcpPluginApi BASE_RPC_API_VERSION
-    RPC_API_VERSION = '1.1'
-
-
-class L3RpcCallback(l3_rpc_base.L3RpcCallbackMixin):
-    # 1.0  L3PluginApi BASE_RPC_API_VERSION
-    # 1.1  Support update_floatingip_statuses
-    RPC_API_VERSION = '1.1'
-
-
-class SecurityGroupServerRpcCallback(
-    sg_db_rpc.SecurityGroupServerRpcCallbackMixin):
-
-    RPC_API_VERSION = sg_rpc.SG_RPC_VERSION
-
-    @staticmethod
-    def get_port_from_device(device):
-        port = ndb.get_port_from_device(device)
-        if port:
-            port['device'] = device
-        LOG.debug(_("NECPluginV2RPCCallbacks.get_port_from_device() called, "
-                    "device=%(device)s => %(ret)s."),
-                  {'device': device, 'ret': port})
-        return port
-
-
-class NECPluginV2RPCCallbacks(object):
+class NECPluginV2RPCCallbacks(n_rpc.RpcCallback):
 
     RPC_API_VERSION = '1.0'
 
     def __init__(self, plugin):
+        super(NECPluginV2RPCCallbacks, self).__init__()
         self.plugin = plugin
-
-    def create_rpc_dispatcher(self):
-        '''Get the rpc dispatcher for this manager.
-
-        If a manager would like to set an rpc API version, or support more than
-        one class as the target of rpc messages, override this method.
-        '''
-        return q_rpc.PluginRpcDispatcher([self])
 
     def update_ports(self, rpc_context, **kwargs):
         """Update ports' information and activate/deavtivate them.

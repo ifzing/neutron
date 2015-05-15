@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012, Nachi Ueno, NTT MCL, Inc.
 # All Rights Reserved.
 #
@@ -20,7 +18,6 @@ from oslo.config import cfg
 from neutron.common import exceptions as exc
 from neutron.common import topics
 from neutron import context as neutron_context
-from neutron.db import api as db
 from neutron.db import db_base_plugin_v2
 from neutron.db import external_net_db
 from neutron.db import extraroute_db
@@ -86,9 +83,6 @@ class MetaPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
                 return False
 
         cfg._is_opt_registered = _is_opt_registered
-
-        # Keep existing tables if multiple plugin use same table name.
-        db.model_base.NeutronBase.__table_args__ = {'keep_existing': True}
 
         self.plugins = {}
 
@@ -197,14 +191,14 @@ class MetaPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
                 return getattr(plugin, key)
 
         # if no plugin support the method, then raise
-        raise AttributeError
+        raise AttributeError()
 
     def _extend_network_dict(self, context, network):
         flavor = self._get_flavor_by_network_id(context, network['id'])
         network[ext_flavor.FLAVOR_NETWORK] = flavor
 
-    def start_rpc_listener(self):
-        return self.plugins[self.rpc_flavor].start_rpc_listener()
+    def start_rpc_listeners(self):
+        return self.plugins[self.rpc_flavor].start_rpc_listeners()
 
     def rpc_workers_supported(self):
         #NOTE: If a plugin which supports multiple RPC workers is desired
@@ -287,7 +281,7 @@ class MetaPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
     def create_port(self, context, port):
         p = port['port']
         if 'network_id' not in p:
-            raise exc.NotFound
+            raise exc.NotFound()
         plugin = self._get_plugin_by_network_id(context, p['network_id'])
         return plugin.create_port(context, port)
 
@@ -334,7 +328,7 @@ class MetaPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
     def create_subnet(self, context, subnet):
         s = subnet['subnet']
         if 'network_id' not in s:
-            raise exc.NotFound
+            raise exc.NotFound()
         plugin = self._get_plugin_by_network_id(context,
                                                 s['network_id'])
         return plugin.create_subnet(context, subnet)

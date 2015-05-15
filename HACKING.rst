@@ -9,6 +9,10 @@ Neutron Specific Commandments
 --------------------------
 
 - [N320] Validate that LOG messages, except debug ones, have translations
+- [N321] Validate that jsonutils module is used instead of json
+- [N322] We do not use @authors tags in source files. We have git to track
+  authorship.
+- [N323] Enforce oslo.* namespace imports for oslo libraries
 
 Creating Unit Tests
 -------------------

@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import contextlib
-import logging
 
 import mock
 from oslo.config import cfg
@@ -23,12 +22,13 @@ import webob.exc
 
 from neutron.api import extensions
 from neutron.common import config
+from neutron.common import exceptions as n_exc
 from neutron import context
-import neutron.db.l3_db  # noqa
 from neutron.db.loadbalancer import loadbalancer_db as ldb
 from neutron.db import servicetype_db as sdb
 import neutron.extensions
 from neutron.extensions import loadbalancer
+from neutron import manager
 from neutron.plugins.common import constants
 from neutron.services.loadbalancer import (
     plugin as loadbalancer_plugin
@@ -37,8 +37,6 @@ from neutron.services.loadbalancer.drivers import abstract_driver
 from neutron.services import provider_configuration as pconf
 from neutron.tests.unit import test_db_plugin
 
-
-LOG = logging.getLogger(__name__)
 
 DB_CORE_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 DB_LB_PLUGIN_KLASS = (
@@ -197,7 +195,7 @@ class LoadBalancerTestMixin(object):
     @contextlib.contextmanager
     def vip(self, fmt=None, name='vip1', pool=None, subnet=None,
             protocol='HTTP', protocol_port=80, admin_state_up=True,
-            no_delete=False, **kwargs):
+            do_delete=True, **kwargs):
         if not fmt:
             fmt = self.fmt
 
@@ -219,12 +217,12 @@ class LoadBalancerTestMixin(object):
                     )
                 vip = self.deserialize(fmt or self.fmt, res)
                 yield vip
-                if not no_delete:
+                if do_delete:
                     self._delete('vips', vip['vip']['id'])
 
     @contextlib.contextmanager
     def pool(self, fmt=None, name='pool1', lb_method='ROUND_ROBIN',
-             protocol='HTTP', admin_state_up=True, no_delete=False,
+             protocol='HTTP', admin_state_up=True, do_delete=True,
              **kwargs):
         if not fmt:
             fmt = self.fmt
@@ -240,12 +238,12 @@ class LoadBalancerTestMixin(object):
             )
         pool = self.deserialize(fmt or self.fmt, res)
         yield pool
-        if not no_delete:
+        if do_delete:
             self._delete('pools', pool['pool']['id'])
 
     @contextlib.contextmanager
     def member(self, fmt=None, address='192.168.1.100', protocol_port=80,
-               admin_state_up=True, no_delete=False, **kwargs):
+               admin_state_up=True, do_delete=True, **kwargs):
         if not fmt:
             fmt = self.fmt
         res = self._create_member(fmt,
@@ -259,14 +257,14 @@ class LoadBalancerTestMixin(object):
             )
         member = self.deserialize(fmt or self.fmt, res)
         yield member
-        if not no_delete:
+        if do_delete:
             self._delete('members', member['member']['id'])
 
     @contextlib.contextmanager
     def health_monitor(self, fmt=None, type='TCP',
                        delay=30, timeout=10, max_retries=3,
                        admin_state_up=True,
-                       no_delete=False, **kwargs):
+                       do_delete=True, **kwargs):
         if not fmt:
             fmt = self.fmt
         res = self._create_health_monitor(fmt,
@@ -295,7 +293,7 @@ class LoadBalancerTestMixin(object):
             for arg in http_related_attributes:
                 self.assertIsNone(the_health_monitor.get(arg))
         yield health_monitor
-        if not no_delete:
+        if do_delete:
             self._delete('health_monitors', the_health_monitor['id'])
 
 
@@ -368,6 +366,26 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
                     expected
                 )
             return vip
+
+    def test_create_vip_create_port_fails(self):
+        with self.subnet() as subnet:
+            with self.pool() as pool:
+                lb_plugin = (manager.NeutronManager.
+                             get_instance().
+                             get_service_plugins()[constants.LOADBALANCER])
+                with mock.patch.object(
+                    lb_plugin, '_create_port_for_vip') as cp:
+                    #some exception that can show up in port creation
+                    cp.side_effect = n_exc.IpAddressGenerationFailure(
+                        net_id=subnet['subnet']['network_id'])
+                    self._create_vip(self.fmt, "vip",
+                                     pool['pool']['id'], "HTTP", "80", True,
+                                     subnet_id=subnet['subnet']['id'],
+                                     expected_res_status=409)
+                req = self.new_list_request('vips')
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertFalse(res['vips'])
 
     def test_create_vip_twice_for_same_pool(self):
         """Test loadbalancer db plugin via extension and directly."""
@@ -535,7 +553,7 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
 
     def test_delete_vip(self):
         with self.pool():
-            with self.vip(no_delete=True) as vip:
+            with self.vip(do_delete=False) as vip:
                 req = self.new_delete_request('vips',
                                               vip['vip']['id'])
                 res = req.get_response(self.ext_api)
@@ -705,8 +723,8 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
             self._delete('members', member1['member']['id'])
 
     def test_delete_pool(self):
-        with self.pool(no_delete=True) as pool:
-            with self.member(no_delete=True,
+        with self.pool(do_delete=False) as pool:
+            with self.member(do_delete=False,
                              pool_id=pool['pool']['id']):
                 req = self.new_delete_request('pools',
                                               pool['pool']['id'])
@@ -714,7 +732,7 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
                 self.assertEqual(res.status_int, webob.exc.HTTPNoContent.code)
 
     def test_delete_pool_preserve_state(self):
-        with self.pool(no_delete=True) as pool:
+        with self.pool(do_delete=False) as pool:
             with self.vip(pool=pool):
                 req = self.new_delete_request('pools',
                                               pool['pool']['id'])
@@ -881,7 +899,7 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
         with self.pool() as pool:
             pool_id = pool['pool']['id']
             with self.member(pool_id=pool_id,
-                             no_delete=True) as member:
+                             do_delete=False) as member:
                 req = self.new_delete_request('members',
                                               member['member']['id'])
                 res = req.get_response(self.ext_api)
@@ -965,6 +983,29 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
             for k, v in keys:
                 self.assertEqual(monitor['health_monitor'][k], v)
 
+    def test_create_health_monitor_with_timeout_delay_invalid(self):
+        data = {'health_monitor': {'type': type,
+                                   'delay': 3,
+                                   'timeout': 6,
+                                   'max_retries': 2,
+                                   'admin_state_up': True,
+                                   'tenant_id': self._tenant_id}}
+        req = self.new_create_request('health_monitors', data, self.fmt)
+        res = req.get_response(self.ext_api)
+        self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+
+    def test_update_health_monitor_with_timeout_delay_invalid(self):
+        with self.health_monitor() as monitor:
+            data = {'health_monitor': {'delay': 10,
+                                       'timeout': 20,
+                                       'max_retries': 2,
+                                       'admin_state_up': False}}
+            req = self.new_update_request("health_monitors",
+                                          data,
+                                          monitor['health_monitor']['id'])
+            res = req.get_response(self.ext_api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+
     def test_update_healthmonitor(self):
         keys = [('type', "TCP"),
                 ('tenant_id', self._tenant_id),
@@ -985,7 +1026,7 @@ class TestLoadBalancer(LoadBalancerPluginDbTestCase):
                 self.assertEqual(res['health_monitor'][k], v)
 
     def test_delete_healthmonitor(self):
-        with self.health_monitor(no_delete=True) as monitor:
+        with self.health_monitor(do_delete=False) as monitor:
             ctx = context.get_admin_context()
             qry = ctx.session.query(ldb.HealthMonitor)
             qry = qry.filter_by(id=monitor['health_monitor']['id'])

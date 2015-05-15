@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright (c) 2012 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -83,7 +81,7 @@ def main():
 
     conf = setup_conf()
     conf()
-    config.setup_logging(conf)
+    config.setup_logging()
 
     configuration_bridges = set([conf.ovs_integration_bridge,
                                  conf.external_network_bridge])

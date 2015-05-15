@@ -33,6 +33,14 @@ Guidelines for writing new hacking checks
 
 log_translation = re.compile(
     r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)\(\s*('|\")")
+author_tag_re = (re.compile("^\s*#\s*@?(a|A)uthor"),
+                 re.compile("^\.\.\s+moduleauthor::"))
+
+
+oslo_namespace_imports_underscore = re.compile(
+    r"import[\s]+oslo_[^\s]+")
+oslo_namespace_imports_from_underscore = re.compile(
+    r"from[\s]+oslo_[^\s]+[\s]+import[\s]+")
 
 
 def validate_log_translations(logical_line, physical_line, filename):
@@ -46,5 +54,52 @@ def validate_log_translations(logical_line, physical_line, filename):
         yield (0, msg)
 
 
+def use_jsonutils(logical_line, filename):
+    msg = "N321: jsonutils.%(fun)s must be used instead of json.%(fun)s"
+
+    # Some files in the tree are not meant to be run from inside Neutron
+    # itself, so we should not complain about them not using jsonutils
+    json_check_skipped_patterns = [
+        "neutron/plugins/openvswitch/agent/xenapi/etc/xapi.d/plugins/netwrap",
+    ]
+
+    for pattern in json_check_skipped_patterns:
+        if pattern in filename:
+            return
+
+    if "json." in logical_line:
+        json_funcs = ['dumps(', 'dump(', 'loads(', 'load(']
+        for f in json_funcs:
+            pos = logical_line.find('json.%s' % f)
+            if pos != -1:
+                yield (pos, msg % {'fun': f[:-1]})
+
+
+def no_author_tags(physical_line):
+    for regex in author_tag_re:
+        if regex.match(physical_line):
+            physical_line = physical_line.lower()
+            pos = physical_line.find('moduleauthor')
+            if pos < 0:
+                pos = physical_line.find('author')
+            return pos, "N322: Don't use author tags"
+
+
+def check_oslo_namespace_imports(logical_line):
+    if re.match(oslo_namespace_imports_underscore, logical_line):
+        msg = ("N323: '%s' must be used instead of '%s'.") % (
+               logical_line.replace('import', 'from').replace('_', ' import '),
+               logical_line)
+        yield(0, msg)
+    elif re.match(oslo_namespace_imports_from_underscore, logical_line):
+        msg = ("N323: '%s' must be used instead of '%s'.") % (
+               logical_line.replace('_', '.'),
+               logical_line)
+        yield(0, msg)
+
+
 def factory(register):
     register(validate_log_translations)
+    register(use_jsonutils)
+    register(no_author_tags)
+    register(check_oslo_namespace_imports)

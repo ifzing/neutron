@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 vArmour Networks Inc.
 # All Rights Reserved.
 #
@@ -14,16 +12,13 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Gary Duan, vArmour Networks Inc.
-#
 
 
 import mock
-from oslo.config import cfg
 
 from neutron.agent.common import config as agent_config
 from neutron.agent import l3_agent
+from neutron.agent import l3_ha_agent
 from neutron.agent.linux import interface
 from neutron.common import config as base_config
 from neutron.common import constants as l3_constants
@@ -41,9 +36,10 @@ class TestVarmourRouter(base.BaseTestCase):
 
     def setUp(self):
         super(TestVarmourRouter, self).setUp()
-        self.conf = cfg.ConfigOpts()
+        self.conf = agent_config.setup_conf()
         self.conf.register_opts(base_config.core_opts)
         self.conf.register_opts(varmour_router.vArmourL3NATAgent.OPTS)
+        self.conf.register_opts(l3_ha_agent.OPTS)
         agent_config.register_interface_driver_opts_helper(self.conf)
         agent_config.register_use_namespaces_opts_helper(self.conf)
         agent_config.register_root_helper(self.conf)
@@ -51,6 +47,7 @@ class TestVarmourRouter(base.BaseTestCase):
         self.conf.set_override('interface_driver',
                                'neutron.agent.linux.interface.NullDriver')
         self.conf.root_helper = 'sudo'
+        self.conf.state_path = ''
 
         self.device_exists_p = mock.patch(
             'neutron.agent.linux.ip_lib.device_exists')
@@ -64,6 +61,9 @@ class TestVarmourRouter(base.BaseTestCase):
             'neutron.agent.linux.external_process.ProcessManager')
         self.external_process = self.external_process_p.start()
 
+        self.makedirs_p = mock.patch('os.makedirs')
+        self.makedirs = self.makedirs_p.start()
+
         self.dvr_cls_p = mock.patch('neutron.agent.linux.interface.NullDriver')
         driver_cls = self.dvr_cls_p.start()
         self.mock_driver = mock.MagicMock()
@@ -75,6 +75,8 @@ class TestVarmourRouter(base.BaseTestCase):
         ip_cls = self.ip_cls_p.start()
         self.mock_ip = mock.MagicMock()
         ip_cls.return_value = self.mock_ip
+
+        mock.patch('neutron.agent.l3_agent.L3PluginApi').start()
 
         self.looping_call_p = mock.patch(
             'neutron.openstack.common.loopingcall.FixedIntervalLoopingCall')

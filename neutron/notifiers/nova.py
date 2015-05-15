@@ -110,7 +110,7 @@ class Notifier(object):
     @property
     def _plugin(self):
         # NOTE(arosen): this cannot be set in __init__ currently since
-        # this class is initalized at the same time as NeutronManager()
+        # this class is initialized at the same time as NeutronManager()
         # which is decorated with synchronized()
         if not hasattr(self, '_plugin_ref'):
             self._plugin_ref = manager.NeutronManager.get_plugin()
@@ -127,6 +127,18 @@ class Notifier(object):
 
         if not cfg.CONF.notify_nova_on_port_data_changes:
             return
+
+        # When neutron re-assigns floating ip from an original instance
+        # port to a new instance port without disassociate it first, an
+        # event should be sent for original instance, that will make nova
+        # know original instance's info, and update database for it.
+        if (action == 'update_floatingip'
+                and returned_obj['floatingip'].get('port_id')
+                and original_obj.get('port_id')):
+            disassociate_returned_obj = {'floatingip': {'port_id': None}}
+            event = self.create_port_changed_event(action, original_obj,
+                                                   disassociate_returned_obj)
+            self.queue_event(event)
 
         event = self.create_port_changed_event(action, original_obj,
                                                returned_obj)
@@ -211,12 +223,11 @@ class Notifier(object):
         port._notify_event = None
 
     def send_events(self):
-        batched_events = []
-        for event in range(len(self.pending_events)):
-            batched_events.append(self.pending_events.pop())
-
-        if not batched_events:
+        if not self.pending_events:
             return
+
+        batched_events = self.pending_events
+        self.pending_events = []
 
         LOG.debug(_("Sending events: %s"), batched_events)
         try:

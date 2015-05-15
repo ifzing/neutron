@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright (c) 2012 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -177,6 +175,21 @@ def _validate_mac_address_or_none(data, valid_values=None):
 def _validate_ip_address(data, valid_values=None):
     try:
         netaddr.IPAddress(_validate_no_whitespace(data))
+        # The followings are quick checks for IPv6 (has ':') and
+        # IPv4.  (has 3 periods like 'xx.xx.xx.xx')
+        # NOTE(yamamoto): netaddr uses libraries provided by the underlying
+        # platform to convert addresses.  For example, inet_aton(3).
+        # Some platforms, including NetBSD and OS X, have inet_aton
+        # implementation which accepts more varying forms of addresses than
+        # we want to accept here.  The following check is to reject such
+        # addresses.  For Example:
+        #   >>> netaddr.IPAddress('1' * 59)
+        #   IPAddress('199.28.113.199')
+        #   >>> netaddr.IPAddress(str(int('1' * 59) & 0xffffffff))
+        #   IPAddress('199.28.113.199')
+        #   >>>
+        if ':' not in data and data.count('.') != 3:
+            raise ValueError()
     except Exception:
         msg = _("'%s' is not a valid IP address") % data
         LOG.debug(msg)
@@ -237,27 +250,38 @@ def _validate_fixed_ips(data, valid_values=None):
                 return msg
 
 
+def _validate_ip_or_hostname(host):
+    ip_err = _validate_ip_address(host)
+    if not ip_err:
+        return
+    name_err = _validate_hostname(host)
+    if not name_err:
+        return
+    msg = _("%(host)s is not a valid IP or hostname. Details: "
+            "%(ip_err)s, %(name_err)s") % {'ip_err': ip_err, 'host': host,
+                                           'name_err': name_err}
+    return msg
+
+
 def _validate_nameservers(data, valid_values=None):
     if not hasattr(data, '__iter__'):
         msg = _("Invalid data format for nameserver: '%s'") % data
         LOG.debug(msg)
         return msg
 
-    ips = []
-    for ip in data:
-        msg = _validate_ip_address(ip)
+    hosts = []
+    for host in data:
+        # This may be an IP or a hostname
+        msg = _validate_ip_or_hostname(host)
         if msg:
-            # This may be a hostname
-            msg = _validate_regex(ip, HOSTNAME_PATTERN)
-            if msg:
-                msg = _("'%s' is not a valid nameserver") % ip
-                LOG.debug(msg)
-                return msg
-        if ip in ips:
-            msg = _("Duplicate nameserver '%s'") % ip
+            msg = _("'%(host)s' is not a valid nameserver. %(msg)s") % {
+                'host': host, 'msg': msg}
+            return msg
+        if host in hosts:
+            msg = _("Duplicate nameserver '%s'") % host
             LOG.debug(msg)
             return msg
-        ips.append(ip)
+        hosts.append(host)
 
 
 def _validate_hostroutes(data, valid_values=None):
@@ -332,6 +356,41 @@ def _validate_subnet_or_none(data, valid_values=None):
     if data is None:
         return
     return _validate_subnet(data, valid_values)
+
+
+def _validate_hostname(data):
+    # NOTE: An individual name regex instead of an entire FQDN was used
+    # because its easier to make correct. Feel free to replace with a
+    # full regex solution. The logic should validate that the hostname
+    # matches RFC 1123 (section 2.1) and RFC 952.
+    hostname_pattern = "[a-zA-Z0-9-]{1,63}$"
+    try:
+        # Trailing periods are allowed to indicate that a name is fully
+        # qualified per RFC 1034 (page 7).
+        trimmed = data if data[-1] != '.' else data[:-1]
+        if len(trimmed) > 255:
+            raise TypeError(
+                _("'%s' exceeds the 255 character hostname limit") % trimmed)
+        names = trimmed.split('.')
+        for name in names:
+            if not name:
+                raise TypeError(_("Encountered an empty component."))
+            if name[-1] == '-' or name[0] == '-':
+                raise TypeError(
+                    _("Name '%s' must not start or end with a hyphen.") % name)
+            if not re.match(hostname_pattern, name):
+                raise TypeError(
+                    _("Name '%s' must be 1-63 characters long, each of "
+                      "which can only be alphanumeric or a hyphen.") % name)
+        # RFC 1123 hints that a TLD can't be all numeric. last is a TLD if
+        # it's an FQDN.
+        if len(names) > 1 and re.match("^[0-9]+$", names[-1]):
+            raise TypeError(_("TLD '%s' must not be all numeric") % names[-1])
+    except TypeError as e:
+        msg = _("'%(data)s' is not a valid hostname. Reason: %(reason)s") % {
+            'data': data, 'reason': e.message}
+        LOG.debug(msg)
+        return msg
 
 
 def _validate_regex(data, valid_values=None):
@@ -481,6 +540,11 @@ def convert_to_boolean(data):
     raise n_exc.InvalidInput(error_message=msg)
 
 
+def convert_to_boolean_if_not_none(data):
+    if data is not None:
+        return convert_to_boolean(data)
+
+
 def convert_to_int(data):
     try:
         return int(data)
@@ -536,9 +600,6 @@ def convert_to_list(data):
     else:
         return [data]
 
-
-HOSTNAME_PATTERN = ("(?=^.{1,254}$)(^(?:(?!\d+\.|-)[a-zA-Z0-9_\-]"
-                    "{1,63}(?<!-)\.?)+(?:[a-zA-Z]{2,})$)")
 
 HEX_ELEM = '[0-9A-Fa-f]'
 UUID_PATTERN = '-'.join([HEX_ELEM + '{8}', HEX_ELEM + '{4}',
@@ -704,8 +765,7 @@ RESOURCE_ATTRIBUTE_MAP = {
                        'default': ATTR_NOT_SPECIFIED,
                        'validate': {'type:ip_address_or_none': None},
                        'is_visible': True},
-        #TODO(salvatore-orlando): Enable PUT on allocation_pools
-        'allocation_pools': {'allow_post': True, 'allow_put': False,
+        'allocation_pools': {'allow_post': True, 'allow_put': True,
                              'default': ATTR_NOT_SPECIFIED,
                              'validate': {'type:ip_pools': None},
                              'is_visible': True},
@@ -727,11 +787,11 @@ RESOURCE_ATTRIBUTE_MAP = {
                         'default': True,
                         'convert_to': convert_to_boolean,
                         'is_visible': True},
-        'ipv6_ra_mode': {'allow_post': True, 'allow_put': True,
+        'ipv6_ra_mode': {'allow_post': True, 'allow_put': False,
                          'default': ATTR_NOT_SPECIFIED,
                          'validate': {'type:values': constants.IPV6_MODES},
                          'is_visible': True},
-        'ipv6_address_mode': {'allow_post': True, 'allow_put': True,
+        'ipv6_address_mode': {'allow_post': True, 'allow_put': False,
                               'default': ATTR_NOT_SPECIFIED,
                               'validate': {'type:values':
                                            constants.IPV6_MODES},

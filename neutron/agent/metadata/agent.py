@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2012 New Dream Network, LLC (DreamHost)
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,15 +11,16 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mark McClain, DreamHost
 
 import hashlib
 import hmac
 import os
 import socket
+import sys
 
 import eventlet
+eventlet.monkey_patch()
+
 import httplib2
 from neutronclient.v2_0 import client
 from oslo.config import cfg
@@ -39,7 +38,6 @@ from neutron.openstack.common.cache import cache
 from neutron.openstack.common import excutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import loopingcall
-from neutron.openstack.common import service
 from neutron import wsgi
 
 LOG = logging.getLogger(__name__)
@@ -143,7 +141,9 @@ class MetadataProxyHandler(object):
 
         internal_ports = qclient.list_ports(
             device_id=router_id,
-            device_owner=n_const.DEVICE_OWNER_ROUTER_INTF)['ports']
+            device_owner=[n_const.DEVICE_OWNER_ROUTER_INTF,
+                          n_const.DEVICE_OWNER_DVR_INTERFACE])['ports']
+        self.auth_info = qclient.get_auth_info()
         return tuple(p['network_id'] for p in internal_ports)
 
     @utils.cache_method_results
@@ -156,10 +156,12 @@ class MetadataProxyHandler(object):
 
         """
         qclient = self._get_neutron_client()
-
-        return qclient.list_ports(
-            network_id=networks,
+        all_ports = qclient.list_ports(
             fixed_ips=['ip_address=%s' % remote_address])['ports']
+
+        self.auth_info = qclient.get_auth_info()
+        networks = set(networks)
+        return [p for p in all_ports if p['network_id'] in networks]
 
     def _get_ports(self, remote_address, network_id=None, router_id=None):
         """Search for all ports that contain passed ip address and belongs to
@@ -180,15 +182,12 @@ class MetadataProxyHandler(object):
         return self._get_ports_for_remote_address(remote_address, networks)
 
     def _get_instance_and_tenant_id(self, req):
-        qclient = self._get_neutron_client()
-
         remote_address = req.headers.get('X-Forwarded-For')
         network_id = req.headers.get('X-Neutron-Network-ID')
         router_id = req.headers.get('X-Neutron-Router-ID')
 
         ports = self._get_ports(remote_address, network_id, router_id)
 
-        self.auth_info = qclient.get_auth_info()
         if len(ports) == 1:
             return ports[0]['device_id'], ports[0]['tenant_id']
         return None, None
@@ -232,6 +231,8 @@ class MetadataProxyHandler(object):
             )
             LOG.warn(msg)
             return webob.exc.HTTPForbidden()
+        elif resp.status == 400:
+            return webob.exc.HTTPBadRequest()
         elif resp.status == 404:
             return webob.exc.HTTPNotFound()
         elif resp.status == 409:
@@ -278,16 +279,8 @@ class UnixDomainWSGIServer(wsgi.Server):
         self._socket = eventlet.listen(file_socket,
                                        family=socket.AF_UNIX,
                                        backlog=backlog)
-        if workers < 1:
-            # For the case where only one process is required.
-            self._server = self.pool.spawn_n(self._run, application,
-                                             self._socket)
-        else:
-            # Minimize the cost of checking for child exit by extending the
-            # wait interval past the default of 0.01s.
-            self._launcher = service.ProcessLauncher(wait_interval=1.0)
-            self._server = WorkerService(self, application)
-            self._launcher.launch_service(self._server, workers=workers)
+
+        self._launch(application, workers=workers)
 
     def _run(self, application, socket):
         """Start a WSGI service in a new green thread."""
@@ -305,11 +298,11 @@ class UnixDomainMetadataProxy(object):
                    default='$state_path/metadata_proxy',
                    help=_('Location for Metadata Proxy UNIX domain socket')),
         cfg.IntOpt('metadata_workers',
-                   default=0,
+                   default=utils.cpu_count() // 2,
                    help=_('Number of separate worker processes for metadata '
                           'server')),
         cfg.IntOpt('metadata_backlog',
-                   default=128,
+                   default=4096,
                    help=_('Number of backlog requests to configure the '
                           'metadata server socket with'))
     ]
@@ -377,14 +370,13 @@ class UnixDomainMetadataProxy(object):
 
 
 def main():
-    eventlet.monkey_patch()
     cfg.CONF.register_opts(UnixDomainMetadataProxy.OPTS)
     cfg.CONF.register_opts(MetadataProxyHandler.OPTS)
     cache.register_oslo_configs(cfg.CONF)
     cfg.CONF.set_default(name='cache_url', default='memory://?default_ttl=5')
     agent_conf.register_agent_state_opts_helper(cfg.CONF)
-    cfg.CONF(project='neutron')
-    config.setup_logging(cfg.CONF)
+    config.init(sys.argv[1:])
+    config.setup_logging()
     utils.log_opt_values(LOG)
     proxy = UnixDomainMetadataProxy(cfg.CONF)
     proxy.run()

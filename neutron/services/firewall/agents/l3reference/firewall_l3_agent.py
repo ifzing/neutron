@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright (c) 2013 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -14,10 +12,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Sumit Naiksatam, sumitnaiksatam@gmail.com, Big Switch Networks, Inc.
-# @author: Sridar Kandaswamy, skandasw@cisco.com, Cisco Systems, Inc.
-# @author: Dan Florea, dflorea@cisco.com, Cisco Systems, Inc.
 
 from oslo.config import cfg
 
@@ -46,8 +40,7 @@ class FWaaSL3PluginApi(api.FWaaSPluginApiMixin):
 
         return self.call(context,
                          self.make_msg('get_firewalls_for_tenant',
-                                       host=self.host),
-                         topic=self.topic)
+                                       host=self.host))
 
     def get_tenants_with_firewalls(self, context, **kwargs):
         """Get all Tenants that have Firewalls configured from plugin."""
@@ -55,8 +48,7 @@ class FWaaSL3PluginApi(api.FWaaSPluginApiMixin):
 
         return self.call(context,
                          self.make_msg('get_tenants_with_firewalls',
-                                       host=self.host),
-                         topic=self.topic)
+                                       host=self.host))
 
 
 class FWaaSL3AgentRpcCallback(api.FWaaSAgentRpcCallbackMixin):
@@ -67,6 +59,19 @@ class FWaaSL3AgentRpcCallback(api.FWaaSAgentRpcCallbackMixin):
         self.conf = conf
         fwaas_driver_class_path = cfg.CONF.fwaas.driver
         self.fwaas_enabled = cfg.CONF.fwaas.enabled
+
+        # None means l3-agent has no information on the server
+        # configuration due to the lack of RPC support.
+        if self.neutron_service_plugins is not None:
+            fwaas_plugin_configured = (constants.FIREWALL
+                                       in self.neutron_service_plugins)
+            if fwaas_plugin_configured and not self.fwaas_enabled:
+                msg = _("FWaaS plugin is configured in the server side, but "
+                        "FWaaS is disabled in L3-agent.")
+                LOG.error(msg)
+                raise SystemExit(1)
+            self.fwaas_enabled = self.fwaas_enabled and fwaas_plugin_configured
+
         if self.fwaas_enabled:
             try:
                 self.fwaas_driver = importutils.import_object(
@@ -131,6 +136,7 @@ class FWaaSL3AgentRpcCallback(api.FWaaSAgentRpcCallbackMixin):
             # call into the driver
             try:
                 self.fwaas_driver.__getattribute__(func_name)(
+                    self.conf.agent_mode,
                     router_info_list,
                     fw)
                 if fw['admin_state_up']:
@@ -165,7 +171,10 @@ class FWaaSL3AgentRpcCallback(api.FWaaSAgentRpcCallbackMixin):
         """
         if fw['status'] == constants.PENDING_DELETE:
             try:
-                self.fwaas_driver.delete_firewall(router_info_list, fw)
+                self.fwaas_driver.delete_firewall(
+                    self.conf.agent_mode,
+                    router_info_list,
+                    fw)
                 self.fwplugin_rpc.firewall_deleted(
                     ctx,
                     fw['id'])
@@ -180,7 +189,10 @@ class FWaaSL3AgentRpcCallback(api.FWaaSAgentRpcCallbackMixin):
         else:
             # PENDING_UPDATE, PENDING_CREATE, ...
             try:
-                self.fwaas_driver.update_firewall(router_info_list, fw)
+                self.fwaas_driver.update_firewall(
+                    self.conf.agent_mode,
+                    router_info_list,
+                    fw)
                 if fw['admin_state_up']:
                     status = constants.ACTIVE
                 else:

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 #Copyright 2013 Cloudbase Solutions SRL
 #Copyright 2013 Pedro Navarro Perez
 #All Rights Reserved.
@@ -15,26 +13,27 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-# @author: Pedro Navarro Perez
-# @author: Alessandro Pilotti, Cloudbase Solutions Srl
 
-import eventlet
 import platform
 import re
+import sys
 import time
+
+import eventlet
+eventlet.monkey_patch()
 
 from oslo.config import cfg
 
 from neutron.agent.common import config
 from neutron.agent import rpc as agent_rpc
 from neutron.agent import securitygroups_rpc as sg_rpc
-from neutron.common import config as logging_config
+from neutron.common import config as common_config
 from neutron.common import constants as n_const
+from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron import context
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import loopingcall
-from neutron.openstack.common.rpc import dispatcher
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.hyperv.agent import utils
 from neutron.plugins.hyperv.agent import utilsfactory
@@ -78,11 +77,13 @@ CONF.register_opts(agent_opts, "AGENT")
 config.register_agent_state_opts_helper(cfg.CONF)
 
 
-class HyperVSecurityAgent(sg_rpc.SecurityGroupAgentRpcMixin):
+class HyperVSecurityAgent(n_rpc.RpcCallback,
+                          sg_rpc.SecurityGroupAgentRpcMixin):
     # Set RPC API version to 1.1 by default.
     RPC_API_VERSION = '1.1'
 
     def __init__(self, context, plugin_rpc):
+        super(HyperVSecurityAgent, self).__init__()
         self.context = context
         self.plugin_rpc = plugin_rpc
 
@@ -92,23 +93,25 @@ class HyperVSecurityAgent(sg_rpc.SecurityGroupAgentRpcMixin):
 
     def _setup_rpc(self):
         self.topic = topics.AGENT
-        self.dispatcher = self._create_rpc_dispatcher()
+        self.endpoints = [HyperVSecurityCallbackMixin(self)]
         consumers = [[topics.SECURITY_GROUP, topics.UPDATE]]
 
-        self.connection = agent_rpc.create_consumers(self.dispatcher,
+        self.connection = agent_rpc.create_consumers(self.endpoints,
                                                      self.topic,
                                                      consumers)
 
-    def _create_rpc_dispatcher(self):
-        rpc_callback = HyperVSecurityCallbackMixin(self)
-        return dispatcher.RpcDispatcher([rpc_callback])
+    @property
+    def use_enhanced_rpc(self):
+        return False
 
 
-class HyperVSecurityCallbackMixin(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
+class HyperVSecurityCallbackMixin(n_rpc.RpcCallback,
+                                  sg_rpc.SecurityGroupAgentRpcCallbackMixin):
     # Set RPC API version to 1.1 by default.
     RPC_API_VERSION = '1.1'
 
     def __init__(self, sg_agent):
+        super(HyperVSecurityCallbackMixin, self).__init__()
         self.sg_agent = sg_agent
 
 
@@ -117,11 +120,12 @@ class HyperVPluginApi(agent_rpc.PluginApi,
     pass
 
 
-class HyperVNeutronAgent(object):
-    # Set RPC API version to 1.0 by default.
-    RPC_API_VERSION = '1.0'
+class HyperVNeutronAgent(n_rpc.RpcCallback):
+    # Set RPC API version to 1.1 by default.
+    RPC_API_VERSION = '1.1'
 
     def __init__(self):
+        super(HyperVNeutronAgent, self).__init__()
         self._utils = utilsfactory.get_hypervutils()
         self._polling_interval = CONF.AGENT.polling_interval
         self._load_physical_network_mappings()
@@ -158,13 +162,13 @@ class HyperVNeutronAgent(object):
         # RPC network init
         self.context = context.get_admin_context_without_session()
         # Handle updates from service
-        self.dispatcher = self._create_rpc_dispatcher()
+        self.endpoints = [self]
         # Define the listening consumers for the agent
         consumers = [[topics.PORT, topics.UPDATE],
                      [topics.NETWORK, topics.DELETE],
                      [topics.PORT, topics.DELETE],
                      [constants.TUNNEL, topics.UPDATE]]
-        self.connection = agent_rpc.create_consumers(self.dispatcher,
+        self.connection = agent_rpc.create_consumers(self.endpoints,
                                                      self.topic,
                                                      consumers)
 
@@ -226,9 +230,6 @@ class HyperVNeutronAgent(object):
             network_type, physical_network,
             segmentation_id, port['admin_state_up'])
 
-    def _create_rpc_dispatcher(self):
-        return dispatcher.RpcDispatcher([self])
-
     def _get_vswitch_name(self, network_type, physical_network):
         if network_type != p_const.TYPE_LOCAL:
             vswitch_name = self._get_vswitch_for_physical_network(
@@ -245,7 +246,10 @@ class HyperVNeutronAgent(object):
 
         vswitch_name = self._get_vswitch_name(network_type, physical_network)
 
-        if network_type in [p_const.TYPE_VLAN, p_const.TYPE_FLAT]:
+        if network_type == p_const.TYPE_VLAN:
+            self._utils.set_switch_external_port_trunk_vlan(vswitch_name,
+                segmentation_id, constants.TRUNK_ENDPOINT_MODE)
+        elif network_type == p_const.TYPE_FLAT:
             #Nothing to do
             pass
         elif network_type == p_const.TYPE_LOCAL:
@@ -358,21 +362,21 @@ class HyperVNeutronAgent(object):
             LOG.debug(_("No port %s defined on agent."), port_id)
 
     def _treat_devices_added(self, devices):
-        resync = False
-        for device in devices:
+        try:
+            devices_details_list = self.plugin_rpc.get_devices_details_list(
+                self.context,
+                devices,
+                self.agent_id)
+        except Exception as e:
+            LOG.debug("Unable to get ports details for "
+                      "devices %(devices)s: %(e)s",
+                      {'devices': devices, 'e': e})
+            # resync is needed
+            return True
+
+        for device_details in devices_details_list:
+            device = device_details['device']
             LOG.info(_("Adding port %s"), device)
-            try:
-                device_details = self.plugin_rpc.get_device_details(
-                    self.context,
-                    device,
-                    self.agent_id)
-            except Exception as e:
-                LOG.debug(
-                    _("Unable to get port details for "
-                      "device %(device)s: %(e)s"),
-                    {'device': device, 'e': e})
-                resync = True
-                continue
             if 'port_id' in device_details:
                 LOG.info(
                     _("Port %(device)s updated. Details: %(device_details)s"),
@@ -396,7 +400,7 @@ class HyperVNeutronAgent(object):
                                                  device,
                                                  self.agent_id,
                                                  cfg.CONF.host)
-        return resync
+        return False
 
     def _treat_devices_removed(self, devices):
         resync = False
@@ -464,9 +468,8 @@ class HyperVNeutronAgent(object):
 
 
 def main():
-    eventlet.monkey_patch()
-    cfg.CONF(project='neutron')
-    logging_config.setup_logging(cfg.CONF)
+    common_config.init(sys.argv[1:])
+    common_config.setup_logging()
 
     plugin = HyperVNeutronAgent()
 

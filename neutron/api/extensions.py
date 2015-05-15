@@ -30,7 +30,6 @@ from neutron.common import exceptions
 import neutron.extensions
 from neutron import manager
 from neutron.openstack.common import log as logging
-from neutron import policy
 from neutron import wsgi
 
 
@@ -149,7 +148,7 @@ class ExtensionDescriptor(object):
     def get_plugin_interface(self):
         """Returns an abstract class which defines contract for the plugin.
 
-        The abstract class should inherit from extesnions.PluginInterface,
+        The abstract class should inherit from extensions.PluginInterface,
         Methods in this abstract class  should be decorated as abstractmethod
         """
         return None
@@ -404,7 +403,6 @@ class ExtensionManager(object):
         self.path = path
         self.extensions = {}
         self._load_all_extensions()
-        policy.reset()
 
     def get_resources(self):
         """Returns a list of ResourceExtension objects."""
@@ -518,12 +516,6 @@ class ExtensionManager(object):
         except AttributeError as ex:
             LOG.exception(_("Exception loading extension: %s"), unicode(ex))
             return False
-        if hasattr(extension, 'check_env'):
-            try:
-                extension.check_env()
-            except exceptions.InvalidExtensionEnv as ex:
-                LOG.warn(_("Exception loading extension: %s"), unicode(ex))
-                return False
         return True
 
     def _load_all_extensions(self):
@@ -685,6 +677,6 @@ def get_extensions_path():
 
 
 def append_api_extensions_path(paths):
-    paths = [cfg.CONF.api_extensions_path] + paths
+    paths = list(set([cfg.CONF.api_extensions_path] + paths))
     cfg.CONF.set_override('api_extensions_path',
                           ':'.join([p for p in paths if p]))

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 VMware, Inc.
 # All Rights Reserved
 #
@@ -24,11 +22,7 @@ from neutron.api.rpc.agentnotifiers import dhcp_rpc_agent_api
 from neutron.api.v2 import attributes
 from neutron.common import constants as const
 from neutron.common import exceptions as ntn_exc
-from neutron.common import rpc as n_rpc
-from neutron.db import agents_db
 from neutron.db import db_base_plugin_v2
-from neutron.db import dhcp_rpc_base
-from neutron.db import l3_db
 from neutron.db import models_v2
 from neutron.openstack.common import log as logging
 from neutron.plugins.vmware.api_client import exception as api_exc
@@ -41,20 +35,6 @@ METADATA_DEFAULT_PREFIX = 30
 METADATA_SUBNET_CIDR = '169.254.169.252/%d' % METADATA_DEFAULT_PREFIX
 METADATA_GATEWAY_IP = '169.254.169.253'
 METADATA_DHCP_ROUTE = '169.254.169.254/32'
-
-
-class NSXRpcCallbacks(dhcp_rpc_base.DhcpRpcCallbackMixin):
-
-    RPC_API_VERSION = '1.1'
-
-    def create_rpc_dispatcher(self):
-        '''Get the rpc dispatcher for this manager.
-
-        If a manager would like to set an rpc API version, or support more than
-        one class as the target of rpc messages, override this method.
-        '''
-        return n_rpc.PluginRpcDispatcher([self,
-                                          agents_db.AgentExtRpcCallback()])
 
 
 def handle_network_dhcp_access(plugin, context, network, action):
@@ -115,7 +95,8 @@ def handle_router_metadata_access(plugin, context, router_id, interface=None):
         return
     ctx_elevated = context.elevated()
     device_filter = {'device_id': [router_id],
-                     'device_owner': [l3_db.DEVICE_OWNER_ROUTER_INTF]}
+                     'device_owner': [const.DEVICE_OWNER_DVR_INTERFACE,
+                                      const.DEVICE_OWNER_ROUTER_INTF]}
     # Retrieve ports calling database plugin
     ports = db_base_plugin_v2.NeutronDbPluginV2.get_ports(
         plugin, ctx_elevated, filters=device_filter)

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 New Dream Network, LLC (DreamHost)
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,8 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mark McClain, DreamHost
 
 import contextlib
 import mock
@@ -27,7 +23,7 @@ from neutron.tests import base
 class TestLbaasService(base.BaseTestCase):
     def test_start(self):
         with mock.patch.object(
-            agent.rpc_service.Service, 'start'
+            agent.n_rpc.Service, 'start'
         ) as mock_start:
 
             mgr = mock.Mock()
@@ -42,12 +38,10 @@ class TestLbaasService(base.BaseTestCase):
         with contextlib.nested(
             mock.patch(logging_str),
             mock.patch.object(agent.service, 'launch'),
-            mock.patch.object(agent, 'eventlet'),
             mock.patch('sys.argv'),
             mock.patch.object(agent.manager, 'LbaasAgentManager'),
             mock.patch.object(cfg.CONF, 'register_opts')
-        ) as (mock_logging, mock_launch, mock_eventlet, sys_argv, mgr_cls, ro):
+        ) as (mock_logging, mock_launch, sys_argv, mgr_cls, ro):
             agent.main()
 
-            self.assertTrue(mock_eventlet.monkey_patch.called)
             mock_launch.assert_called_once_with(mock.ANY)

@@ -40,15 +40,18 @@ class LocalTypeDriver(api.TypeDriver):
     def initialize(self):
         pass
 
+    def is_partial_segment(self, segment):
+        return False
+
     def validate_provider_segment(self, segment):
         for key, value in segment.iteritems():
-            if value and key not in [api.NETWORK_TYPE]:
+            if value and key != api.NETWORK_TYPE:
                 msg = _("%s prohibited for local provider network") % key
                 raise exc.InvalidInput(error_message=msg)
 
     def reserve_provider_segment(self, session, segment):
         # No resources to reserve
-        pass
+        return segment
 
     def allocate_tenant_segment(self, session):
         # No resources to allocate

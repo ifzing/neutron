@@ -13,158 +13,39 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from six import moves
-import testtools
-from testtools import matchers
+import mock
 
-from neutron.common import exceptions as exc
-import neutron.db.api as db
-from neutron.plugins.ml2 import driver_api as api
+from oslo.db import exception as db_exc
+from sqlalchemy.orm import exc as sa_exc
+import testtools
+
+from neutron.db import api as db_api
+from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.drivers import type_gre
-from neutron.tests import base
+from neutron.tests.unit.ml2 import test_type_vxlan
+from neutron.tests.unit import testlib_api
+
 
 TUNNEL_IP_ONE = "10.10.10.10"
 TUNNEL_IP_TWO = "10.10.10.20"
-TUN_MIN = 100
-TUN_MAX = 109
-TUNNEL_RANGES = [(TUN_MIN, TUN_MAX)]
-UPDATED_TUNNEL_RANGES = [(TUN_MIN + 5, TUN_MAX + 5)]
 
 
-class GreTypeTest(base.BaseTestCase):
+def _add_allocation(session, gre_id, allocated=False):
+    allocation = type_gre.GreAllocation(gre_id=gre_id, allocated=allocated)
+    allocation.save(session)
 
-    def setUp(self):
-        super(GreTypeTest, self).setUp()
-        db.configure_db()
-        self.driver = type_gre.GreTypeDriver()
-        self.driver.gre_id_ranges = TUNNEL_RANGES
-        self.driver._sync_gre_allocations()
-        self.session = db.get_session()
-        self.addCleanup(db.clear_db)
 
-    def test_validate_provider_segment(self):
-        segment = {api.NETWORK_TYPE: 'gre',
-                   api.PHYSICAL_NETWORK: 'phys_net',
-                   api.SEGMENTATION_ID: None}
+def _get_allocation(session, gre_id):
+    return session.query(type_gre.GreAllocation).filter_by(
+        gre_id=gre_id).one()
 
-        with testtools.ExpectedException(exc.InvalidInput):
-            self.driver.validate_provider_segment(segment)
 
-        segment[api.PHYSICAL_NETWORK] = None
-        with testtools.ExpectedException(exc.InvalidInput):
-            self.driver.validate_provider_segment(segment)
+class GreTypeTest(test_type_vxlan.TunnelTypeTestMixin,
+                  testlib_api.SqlTestCase):
+    DRIVER_CLASS = type_gre.GreTypeDriver
+    TYPE = p_const.TYPE_GRE
 
-    def test_sync_tunnel_allocations(self):
-        self.assertIsNone(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MIN - 1))
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MIN)).allocated
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MIN + 1)).allocated
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MAX - 1)).allocated
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MAX)).allocated
-        )
-        self.assertIsNone(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MAX + 1))
-        )
-
-        self.driver.gre_id_ranges = UPDATED_TUNNEL_RANGES
-        self.driver._sync_gre_allocations()
-
-        self.assertIsNone(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MIN + 5 - 1))
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MIN + 5)).allocated
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MIN + 5 + 1)).allocated
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MAX + 5 - 1)).allocated
-        )
-        self.assertFalse(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MAX + 5)).allocated
-        )
-        self.assertIsNone(
-            self.driver.get_gre_allocation(self.session,
-                                           (TUN_MAX + 5 + 1))
-        )
-
-    def test_reserve_provider_segment(self):
-        segment = {api.NETWORK_TYPE: 'gre',
-                   api.PHYSICAL_NETWORK: 'None',
-                   api.SEGMENTATION_ID: 101}
-        self.driver.reserve_provider_segment(self.session, segment)
-        alloc = self.driver.get_gre_allocation(self.session,
-                                               segment[api.SEGMENTATION_ID])
-        self.assertTrue(alloc.allocated)
-
-        with testtools.ExpectedException(exc.TunnelIdInUse):
-            self.driver.reserve_provider_segment(self.session, segment)
-
-        self.driver.release_segment(self.session, segment)
-        alloc = self.driver.get_gre_allocation(self.session,
-                                               segment[api.SEGMENTATION_ID])
-        self.assertFalse(alloc.allocated)
-
-        segment[api.SEGMENTATION_ID] = 1000
-        self.driver.reserve_provider_segment(self.session, segment)
-        alloc = self.driver.get_gre_allocation(self.session,
-                                               segment[api.SEGMENTATION_ID])
-        self.assertTrue(alloc.allocated)
-
-        self.driver.release_segment(self.session, segment)
-        alloc = self.driver.get_gre_allocation(self.session,
-                                               segment[api.SEGMENTATION_ID])
-        self.assertIsNone(alloc)
-
-    def test_allocate_tenant_segment(self):
-        tunnel_ids = set()
-        for x in moves.xrange(TUN_MIN, TUN_MAX + 1):
-            segment = self.driver.allocate_tenant_segment(self.session)
-            self.assertThat(segment[api.SEGMENTATION_ID],
-                            matchers.GreaterThan(TUN_MIN - 1))
-            self.assertThat(segment[api.SEGMENTATION_ID],
-                            matchers.LessThan(TUN_MAX + 1))
-            tunnel_ids.add(segment[api.SEGMENTATION_ID])
-
-        segment = self.driver.allocate_tenant_segment(self.session)
-        self.assertIsNone(segment)
-
-        segment = {api.NETWORK_TYPE: 'gre',
-                   api.PHYSICAL_NETWORK: 'None',
-                   api.SEGMENTATION_ID: tunnel_ids.pop()}
-        self.driver.release_segment(self.session, segment)
-        segment = self.driver.allocate_tenant_segment(self.session)
-        self.assertThat(segment[api.SEGMENTATION_ID],
-                        matchers.GreaterThan(TUN_MIN - 1))
-        self.assertThat(segment[api.SEGMENTATION_ID],
-                        matchers.LessThan(TUN_MAX + 1))
-        tunnel_ids.add(segment[api.SEGMENTATION_ID])
-
-        for tunnel_id in tunnel_ids:
-            segment[api.SEGMENTATION_ID] = tunnel_id
-            self.driver.release_segment(self.session, segment)
-
-    def test_gre_endpoints(self):
+    def test_endpoints(self):
         tun_1 = self.driver.add_endpoint(TUNNEL_IP_ONE)
         tun_2 = self.driver.add_endpoint(TUNNEL_IP_TWO)
         self.assertEqual(TUNNEL_IP_ONE, tun_1.ip_address)
@@ -176,33 +57,39 @@ class GreTypeTest(base.BaseTestCase):
             self.assertIn(endpoint['ip_address'],
                           [TUNNEL_IP_ONE, TUNNEL_IP_TWO])
 
+    def test_add_same_ip_endpoints(self):
+        self.driver.add_endpoint(TUNNEL_IP_ONE)
+        with mock.patch.object(type_gre.LOG, 'warning') as log_warn:
+            self.driver.add_endpoint(TUNNEL_IP_ONE)
+        log_warn.assert_called_once_with(mock.ANY, TUNNEL_IP_ONE)
 
-class GreTypeMultiRangeTest(base.BaseTestCase):
+    def test_sync_allocations_entry_added_during_session(self):
+        with mock.patch.object(self.driver, '_add_allocation',
+                               side_effect=db_exc.DBDuplicateEntry) as (
+                mock_add_allocation):
+            self.driver.sync_allocations()
+            self.assertTrue(mock_add_allocation.called)
 
-    TUN_MIN0 = 100
-    TUN_MAX0 = 101
-    TUN_MIN1 = 200
-    TUN_MAX1 = 201
-    TUNNEL_MULTI_RANGES = [(TUN_MIN0, TUN_MAX0), (TUN_MIN1, TUN_MAX1)]
+    def test__add_allocation_not_existing(self):
+        session = db_api.get_session()
+        _add_allocation(session, gre_id=1)
+        self.driver._add_allocation(session, set([1, 2]))
+        _get_allocation(session, 2)
 
-    def setUp(self):
-        super(GreTypeMultiRangeTest, self).setUp()
-        db.configure_db()
-        self.driver = type_gre.GreTypeDriver()
-        self.driver.gre_id_ranges = self.TUNNEL_MULTI_RANGES
-        self.driver._sync_gre_allocations()
-        self.session = db.get_session()
-        self.addCleanup(db.clear_db)
+    def test__add_allocation_existing_allocated_is_kept(self):
+        session = db_api.get_session()
+        _add_allocation(session, gre_id=1, allocated=True)
+        self.driver._add_allocation(session, set([2]))
+        _get_allocation(session, 1)
 
-    def test_release_segment(self):
-        segments = [self.driver.allocate_tenant_segment(self.session)
-                    for i in range(4)]
+    def test__add_allocation_existing_not_allocated_is_removed(self):
+        session = db_api.get_session()
+        _add_allocation(session, gre_id=1)
+        self.driver._add_allocation(session, set([2]))
+        with testtools.ExpectedException(sa_exc.NoResultFound):
+            _get_allocation(session, 1)
 
-        # Release them in random order. No special meaning.
-        for i in (0, 2, 1, 3):
-            self.driver.release_segment(self.session, segments[i])
 
-        for key in (self.TUN_MIN0, self.TUN_MAX0,
-                    self.TUN_MIN1, self.TUN_MAX1):
-            alloc = self.driver.get_gre_allocation(self.session, key)
-            self.assertFalse(alloc.allocated)
+class GreTypeMultiRangeTest(test_type_vxlan.TunnelTypeMultiRangeTestMixin,
+                           testlib_api.SqlTestCase):
+    DRIVER_CLASS = type_gre.GreTypeDriver

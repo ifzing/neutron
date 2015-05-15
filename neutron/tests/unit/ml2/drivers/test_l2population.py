@@ -12,24 +12,20 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Sylvain Afchain, eNovance SAS
-# @author: Francois Eleouet, Orange
-# @author: Mathieu Rohon, Orange
 
+import contextlib
 import mock
 
 from neutron.common import constants
 from neutron.common import topics
 from neutron import context
 from neutron.db import agents_db
-from neutron.db import api as db_api
 from neutron.extensions import portbindings
 from neutron.extensions import providernet as pnet
 from neutron import manager
 from neutron.openstack.common import timeutils
 from neutron.plugins.ml2 import config as config
-from neutron.plugins.ml2.drivers.l2pop import constants as l2_consts
+from neutron.plugins.ml2.drivers.l2pop import mech_driver as l2pop_mech_driver
 from neutron.plugins.ml2 import managers
 from neutron.plugins.ml2 import rpc
 from neutron.tests.unit import test_db_plugin as test_plugin
@@ -79,8 +75,22 @@ L2_AGENT_4 = {
     'start_flag': True
 }
 
+L2_AGENT_5 = {
+    'binary': 'neutron-ofagent-agent',
+    'host': HOST + '_5',
+    'topic': constants.L2_AGENT_TOPIC,
+    'configurations': {'tunneling_ip': '20.0.0.5',
+                       'tunnel_types': [],
+                       'bridge_mappings': {'phys1': 'br'},
+                       'l2pop_network_types': ['vlan']},
+    'agent_type': constants.AGENT_TYPE_OFA,
+    'tunnel_type': [],
+    'start_flag': True
+}
+
 PLUGIN_NAME = 'neutron.plugins.ml2.plugin.Ml2Plugin'
 NOTIFIER = 'neutron.plugins.ml2.rpc.AgentNotifierApi'
+DEVICE_OWNER_COMPUTE = 'compute:None'
 
 
 class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
@@ -91,8 +101,11 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         # driver apis.
         config.cfg.CONF.set_override('mechanism_drivers',
                                      ['openvswitch', 'linuxbridge',
-                                      'l2population'],
+                                      'ofagent', 'l2population'],
                                      'ml2')
+        config.cfg.CONF.set_override('network_vlan_ranges',
+                                     ['phys1:1:100'],
+                                     'ml2_type_vlan')
         super(TestL2PopulationRpcTestCase, self).setUp(PLUGIN_NAME)
 
         self.adminContext = context.get_admin_context()
@@ -101,9 +114,6 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         self.notifier = rpc.AgentNotifierApi(topics.AGENT)
         self.callbacks = rpc.RpcCallbacks(self.notifier, self.type_manager)
 
-        self.orig_supported_agents = l2_consts.SUPPORTED_AGENT_TYPES
-        l2_consts.SUPPORTED_AGENT_TYPES = [constants.AGENT_TYPE_OVS]
-
         net_arg = {pnet.NETWORK_TYPE: 'vxlan',
                    pnet.SEGMENTATION_ID: '1'}
         self._network = self._make_network(self.fmt, 'net1', True,
@@ -111,17 +121,26 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
                                                      pnet.SEGMENTATION_ID,),
                                            **net_arg)
 
+        net_arg = {pnet.NETWORK_TYPE: 'vlan',
+                   pnet.PHYSICAL_NETWORK: 'phys1',
+                   pnet.SEGMENTATION_ID: '2'}
+        self._network2 = self._make_network(self.fmt, 'net2', True,
+                                            arg_list=(pnet.NETWORK_TYPE,
+                                                      pnet.PHYSICAL_NETWORK,
+                                                      pnet.SEGMENTATION_ID,),
+                                            **net_arg)
+
         notifier_patch = mock.patch(NOTIFIER)
         notifier_patch.start()
 
         self.fanout_topic = topics.get_topic_name(topics.AGENT,
                                                   topics.L2POPULATION,
                                                   topics.UPDATE)
-        fanout = ('neutron.openstack.common.rpc.proxy.RpcProxy.fanout_cast')
+        fanout = ('neutron.common.rpc.RpcProxy.fanout_cast')
         fanout_patch = mock.patch(fanout)
         self.mock_fanout = fanout_patch.start()
 
-        cast = ('neutron.openstack.common.rpc.proxy.RpcProxy.cast')
+        cast = ('neutron.common.rpc.RpcProxy.cast')
         cast_patch = mock.patch(cast)
         self.mock_cast = cast_patch.start()
 
@@ -129,12 +148,6 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
                   'get_agent_uptime')
         uptime_patch = mock.patch(uptime, return_value=190)
         uptime_patch.start()
-
-        self.addCleanup(db_api.clear_db)
-
-    def tearDown(self):
-        l2_consts.SUPPORTED_AGENT_TYPES = self.orig_supported_agents
-        super(TestL2PopulationRpcTestCase, self).tearDown()
 
     def _register_ml2_agents(self):
         callback = agents_db.AgentExtRpcCallback()
@@ -150,6 +163,9 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         callback.report_state(self.adminContext,
                               agent_state={'agent_state': L2_AGENT_4},
                               time=timeutils.strtime())
+        callback.report_state(self.adminContext,
+                              agent_state={'agent_state': L2_AGENT_5},
+                              time=timeutils.strtime())
 
     def test_fdb_add_called(self):
         self._register_ml2_agents()
@@ -157,6 +173,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
@@ -209,6 +226,44 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
 
                     self.assertFalse(self.mock_fanout.called)
 
+    def test_fdb_add_called_for_l2pop_network_types(self):
+        self._register_ml2_agents()
+
+        host = HOST + '_5'
+        with self.subnet(network=self._network2) as subnet:
+            host_arg = {portbindings.HOST_ID: host}
+            with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
+                           arg_list=(portbindings.HOST_ID,),
+                           **host_arg) as port1:
+                with self.port(subnet=subnet,
+                               arg_list=(portbindings.HOST_ID,),
+                               **host_arg):
+                    p1 = port1['port']
+
+                    device = 'tap' + p1['id']
+
+                    self.mock_fanout.reset_mock()
+                    self.callbacks.update_device_up(self.adminContext,
+                                                    agent_id=host,
+                                                    device=device)
+
+                    p1_ips = [p['ip_address'] for p in p1['fixed_ips']]
+                    expected = {'args':
+                                {'fdb_entries':
+                                 {p1['network_id']:
+                                  {'ports':
+                                   {'20.0.0.5': [constants.FLOODING_ENTRY,
+                                                 [p1['mac_address'],
+                                                  p1_ips[0]]]},
+                                   'network_type': 'vlan',
+                                   'segment_id': 2}}},
+                                'namespace': None,
+                                'method': 'add_fdb_entries'}
+
+                    self.mock_fanout.assert_called_with(
+                        mock.ANY, expected, topic=self.fanout_topic)
+
     def test_fdb_add_two_agents(self):
         self._register_ml2_agents()
 
@@ -216,11 +271,13 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
             host_arg = {portbindings.HOST_ID: HOST,
                         'admin_state_up': True}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID, 'admin_state_up',),
                            **host_arg) as port1:
                 host_arg = {portbindings.HOST_ID: HOST + '_2',
                             'admin_state_up': True}
                 with self.port(subnet=subnet,
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,
                                          'admin_state_up',),
                                **host_arg) as port2:
@@ -280,14 +337,17 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST + '_2'}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.subnet(cidr='10.1.0.0/24') as subnet2:
                     with self.port(subnet=subnet2,
+                                   device_owner=DEVICE_OWNER_COMPUTE,
                                    arg_list=(portbindings.HOST_ID,),
                                    **host_arg):
                         host_arg = {portbindings.HOST_ID: HOST}
                         with self.port(subnet=subnet,
+                                       device_owner=DEVICE_OWNER_COMPUTE,
                                        arg_list=(portbindings.HOST_ID,),
                                        **host_arg) as port3:
                             p1 = port1['port']
@@ -350,9 +410,11 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
                     p2 = port2['port']
@@ -395,9 +457,11 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg):
                 with self.port(subnet=subnet,
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
                     p2 = port2['port']
@@ -434,6 +498,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port:
                 p1 = port['port']
@@ -445,6 +510,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
                                                 device=device)
 
                 with self.port(subnet=subnet,
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
                     p2 = port2['port']
@@ -454,7 +520,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
                     self.callbacks.update_device_up(self.adminContext,
                                                     agent_id=HOST,
                                                     device=device1)
-
+                self._delete('ports', port2['port']['id'])
                 p2_ips = [p['ip_address'] for p in p2['fixed_ips']]
                 expected = {'args':
                             {'fdb_entries':
@@ -476,9 +542,11 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg):
                 with self.port(subnet=subnet,
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port:
                     p1 = port['port']
@@ -488,7 +556,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
                     self.callbacks.update_device_up(self.adminContext,
                                                     agent_id=HOST,
                                                     device=device)
-
+                self._delete('ports', port['port']['id'])
                 p1_ips = [p['ip_address'] for p in p1['fixed_ips']]
                 expected = {'args':
                             {'fdb_entries':
@@ -511,6 +579,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 p1 = port1['port']
@@ -594,6 +663,7 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 p1 = port1['port']
@@ -623,9 +693,11 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
             host_arg = {portbindings.HOST_ID: L2_AGENT['host']}
             host2_arg = {portbindings.HOST_ID: L2_AGENT_2['host']}
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host2_arg) as port2:
                     p1 = port1['port']
@@ -673,9 +745,11 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
             host_arg = {portbindings.HOST_ID: L2_AGENT['host']}
             host2_arg = {portbindings.HOST_ID: L2_AGENT_2['host']}
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                               device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host2_arg) as port2:
                     p1 = port1['port']
@@ -722,3 +796,17 @@ class TestL2PopulationRpcTestCase(test_plugin.NeutronDbPluginV2TestCase):
 
                     self.mock_fanout.assert_called_with(
                         mock.ANY, expected, topic=self.fanout_topic)
+
+    def test_delete_port_invokes_update_device_down(self):
+        l2pop_mech = l2pop_mech_driver.L2populationMechanismDriver()
+        l2pop_mech.L2PopulationAgentNotify = mock.Mock()
+        l2pop_mech.rpc_ctx = mock.Mock()
+        with contextlib.nested(
+                mock.patch.object(l2pop_mech,
+                           '_update_port_down',
+                           return_value=None),
+                mock.patch.object(l2pop_mech.L2PopulationAgentNotify,
+                                  'remove_fdb_entries')) as (upd_port_down,
+                                                             rem_fdb_entries):
+            l2pop_mech.delete_port_postcommit(mock.Mock())
+            self.assertTrue(upd_port_down.called)

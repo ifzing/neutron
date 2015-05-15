@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2012 NEC Corporation.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,12 +11,10 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-# @author: Ryota MIBU
 
 import sqlalchemy as sa
 
 from neutron.db import api as db
-from neutron.db import model_base
 from neutron.db import models_v2
 from neutron.db import securitygroups_db as sg_db
 from neutron.extensions import securitygroup as ext_sg
@@ -44,10 +40,6 @@ resource_map = {'ofc_tenant': nmodels.OFCTenantMapping,
 
 def _get_resource_model(resource):
     return resource_map[resource]
-
-
-def clear_db(base=model_base.BASEV2):
-    db.clear_db(base)
 
 
 def get_ofc_item(session, resource, neutron_id):

@@ -36,6 +36,7 @@ from neutron.tests import base
 from neutron.tests.unit import test_api_v2
 from neutron.tests.unit import test_db_plugin
 from neutron.tests.unit import test_extensions
+from neutron.tests.unit import testlib_plugin
 from neutron.tests.unit import vmware
 from neutron.tests.unit.vmware import test_nsx_plugin
 
@@ -61,7 +62,8 @@ class TestExtensionManager(object):
         return []
 
 
-class NetworkGatewayExtensionTestCase(base.BaseTestCase):
+class NetworkGatewayExtensionTestCase(base.BaseTestCase,
+                                      testlib_plugin.PluginSetupHelper):
 
     def setUp(self):
         super(NetworkGatewayExtensionTestCase, self).setUp()
@@ -652,8 +654,11 @@ class NetworkGatewayDbTestCase(test_db_plugin.NeutronDbPluginV2TestCase):
     def test_connect_and_disconnect_network_no_seg_type(self):
         self._test_connect_and_disconnect_network(None)
 
-    def test_connect_and_disconnect_network_with_segmentation_id(self):
+    def test_connect_and_disconnect_network_vlan_with_segmentation_id(self):
         self._test_connect_and_disconnect_network('vlan', 999)
+
+    def test_connect_and_disconnect_network_vlan_without_segmentation_id(self):
+        self._test_connect_and_disconnect_network('vlan')
 
     def test_connect_network_multiple_times(self):
         with self._network_gateway() as gw:
@@ -714,6 +719,22 @@ class NetworkGatewayDbTestCase(test_db_plugin.NeutronDbPluginV2TestCase):
                                      gw[self.gw_resource]['id'],
                                      net_1['network']['id'],
                                      'vlan', 555)
+
+    def test_connect_network_vlan_invalid_seg_id_returns_400(self):
+        with self._network_gateway() as gw:
+            with self.network() as net:
+                # above upper bound
+                self._gateway_action('connect',
+                                     gw[self.gw_resource]['id'],
+                                     net['network']['id'],
+                                     'vlan', 4095,
+                                     expected_status=exc.HTTPBadRequest.code)
+                # below lower bound (0 is valid for NSX plugin)
+                self._gateway_action('connect',
+                                     gw[self.gw_resource]['id'],
+                                     net['network']['id'],
+                                     'vlan', -1,
+                                     expected_status=exc.HTTPBadRequest.code)
 
     def test_connect_invalid_network_returns_400(self):
         with self._network_gateway() as gw:
@@ -953,7 +974,7 @@ class TestNetworkGateway(test_nsx_plugin.NsxPluginV2TestCase,
 
     def test_create_network_gateway_nsx_error_returns_500(self):
         def raise_nsx_api_exc(*args, **kwargs):
-            raise api_exc.NsxApiException
+            raise api_exc.NsxApiException()
 
         with mock.patch.object(nsxlib.l2gateway,
                                'create_l2_gw_service',

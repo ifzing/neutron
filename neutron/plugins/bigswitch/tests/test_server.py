@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012, Big Switch Networks, Inc.
 # All Rights Reserved.
 #
@@ -15,8 +13,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mandeep Dhami, Big Switch Networks, Inc.
 
 """Test server mocking a REST based network ctrl.
 
@@ -24,11 +20,12 @@ Used for NeutronRestProxy tests
 """
 from __future__ import print_function
 
-import json
 import re
 
 from six import moves
 from wsgiref import simple_server
+
+from neutron.openstack.common import jsonutils
 
 
 class TestNetworkCtrl(object):
@@ -124,7 +121,7 @@ class TestNetworkCtrl(object):
                 request_data = environ.get('wsgi.input').read(content_len)
                 if request_data:
                     try:
-                        request_data = json.loads(request_data)
+                        request_data = jsonutils.loads(request_data)
                     except Exception:
                         # OK for it not to be json! Ignore it
                         pass
@@ -139,13 +136,14 @@ class TestNetworkCtrl(object):
                 print('%s %s' % (method, uri))
                 if request_data:
                     print('%s' %
-                          json.dumps(request_data, sort_keys=True, indent=4))
+                          jsonutils.dumps(
+                              request_data, sort_keys=True, indent=4))
 
             status, body = self.request_handler(method, uri, None)
             body_data = None
             if body:
                 try:
-                    body_data = json.loads(body)
+                    body_data = jsonutils.loads(body)
                 except Exception:
                     # OK for it not to be json! Ignore it
                     pass
@@ -154,7 +152,8 @@ class TestNetworkCtrl(object):
             if self.debug:
                 if self.debug_env:
                     print('%s: %s' % ('Response',
-                          json.dumps(body_data, sort_keys=True, indent=4)))
+                          jsonutils.dumps(
+                              body_data, sort_keys=True, indent=4)))
             return body
         return simple_server.make_server(self.host, self.port, app)
 

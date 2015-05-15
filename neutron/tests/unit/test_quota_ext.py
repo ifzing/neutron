@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -27,20 +25,20 @@ from neutron.api.v2 import attributes
 from neutron.common import config
 from neutron.common import exceptions
 from neutron import context
-from neutron.db import api as db
 from neutron.db import quota_db
 from neutron import quota
 from neutron.tests import base
 from neutron.tests.unit import test_api_v2
 from neutron.tests.unit import testlib_api
+from neutron.tests.unit import testlib_plugin
 
-TARGET_PLUGIN = ('neutron.plugins.linuxbridge.lb_neutron_plugin'
-                 '.LinuxBridgePluginV2')
+TARGET_PLUGIN = 'neutron.plugins.ml2.plugin.Ml2Plugin'
 
 _get_path = test_api_v2._get_path
 
 
-class QuotaExtensionTestCase(testlib_api.WebTestCase):
+class QuotaExtensionTestCase(testlib_api.WebTestCase,
+                             testlib_plugin.PluginSetupHelper):
 
     def setUp(self):
         super(QuotaExtensionTestCase, self).setUp()
@@ -70,7 +68,6 @@ class QuotaExtensionTestCase(testlib_api.WebTestCase):
         # extra1 here is added later, so have to do it manually
         quota.QUOTAS.register_resource_by_name('extra1')
         ext_mgr = extensions.PluginAwareExtensionManager.get_instance()
-        db.configure_db()
         app = config.load_paste_app('extensions_test_app')
         ext_middleware = extensions.ExtensionMiddleware(app, ext_mgr=ext_mgr)
         self.api = webtest.TestApp(ext_middleware)
@@ -78,8 +75,6 @@ class QuotaExtensionTestCase(testlib_api.WebTestCase):
     def tearDown(self):
         self.api = None
         self.plugin = None
-        db.clear_db()
-
         # Restore the global RESOURCE_ATTRIBUTE_MAP
         attributes.RESOURCE_ATTRIBUTE_MAP = self.saved_attr_map
         super(QuotaExtensionTestCase, self).tearDown()

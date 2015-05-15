@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright (c) 2012 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -18,6 +16,8 @@
 import re
 
 import eventlet
+eventlet.monkey_patch()
+
 from oslo.config import cfg
 
 from neutron.agent.common import config as agent_config
@@ -157,11 +157,9 @@ def main():
     installation as it will blindly purge namespaces and their devices. This
     option also kills any lingering DHCP instances.
     """
-    eventlet.monkey_patch()
-
     conf = setup_conf()
     conf()
-    config.setup_logging(conf)
+    config.setup_logging()
 
     root_helper = agent_config.get_root_helper(conf)
     # Identify namespaces that are candidates for deletion.

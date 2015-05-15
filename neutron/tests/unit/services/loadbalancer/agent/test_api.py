@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2013 New Dream Network, LLC (DreamHost)
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,8 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Mark McClain, DreamHost
 
 import mock
 
@@ -43,8 +39,7 @@ class TestApiCache(base.BaseTestCase):
         self.make_msg.assert_called_once_with('get_ready_devices', host='host')
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )
 
     def test_get_logical_device(self):
@@ -59,8 +54,7 @@ class TestApiCache(base.BaseTestCase):
 
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )
 
     def test_pool_destroyed(self):
@@ -75,8 +69,7 @@ class TestApiCache(base.BaseTestCase):
 
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )
 
     def test_pool_deployed(self):
@@ -91,8 +84,7 @@ class TestApiCache(base.BaseTestCase):
 
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )
 
     def test_update_status(self):
@@ -110,7 +102,6 @@ class TestApiCache(base.BaseTestCase):
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
             self.make_msg.return_value,
-            topic='topic'
         )
 
     def test_plug_vip_port(self):
@@ -126,8 +117,7 @@ class TestApiCache(base.BaseTestCase):
 
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )
 
     def test_unplug_vip_port(self):
@@ -143,8 +133,7 @@ class TestApiCache(base.BaseTestCase):
 
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )
 
     def test_update_pool_stats(self):
@@ -161,6 +150,5 @@ class TestApiCache(base.BaseTestCase):
 
         self.mock_call.assert_called_once_with(
             mock.sentinel.context,
-            self.make_msg.return_value,
-            topic='topic'
+            self.make_msg.return_value
         )

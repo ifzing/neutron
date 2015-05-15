@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 Locaweb.
 # All Rights Reserved.
 #
@@ -15,9 +13,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 #
-# @author: Juliano Martinez, Locaweb.
 # based on
-#   https://github.com/openstack/nova/blob/master/nova/network/linux_net.py
+# https://github.com/openstack/nova/blob/master/nova/network/linux_net.py
 
 """Implements iptables rules using linux utilities."""
 
@@ -238,11 +235,17 @@ class IptablesTable(object):
                      {'chain': chain, 'rule': rule,
                       'top': top, 'wrap': wrap})
 
+    def _get_chain_rules(self, chain, wrap):
+        chain = get_chain_name(chain, wrap)
+        return [rule for rule in self.rules
+                if rule.chain == chain and rule.wrap == wrap]
+
+    def is_chain_empty(self, chain, wrap=True):
+        return not self._get_chain_rules(chain, wrap)
+
     def empty_chain(self, chain, wrap=True):
         """Remove all rules from a chain."""
-        chain = get_chain_name(chain, wrap)
-        chained_rules = [rule for rule in self.rules
-                         if rule.chain == chain and rule.wrap == wrap]
+        chained_rules = self._get_chain_rules(chain, wrap)
         for rule in chained_rules:
             self.rules.remove(rule)
 
@@ -317,6 +320,10 @@ class IptablesManager(object):
                 {'nat': IptablesTable(binary_name=self.wrap_name)})
             builtin_chains[4].update({'nat': ['PREROUTING',
                                       'OUTPUT', 'POSTROUTING']})
+            self.ipv4.update(
+                {'raw': IptablesTable(binary_name=self.wrap_name)})
+            builtin_chains[4].update({'raw': ['PREROUTING',
+                                      'OUTPUT']})
 
         for ip_version in builtin_chains:
             if ip_version == 4:
@@ -350,6 +357,13 @@ class IptablesManager(object):
             # the snat chain.
             self.ipv4['nat'].add_chain('float-snat')
             self.ipv4['nat'].add_rule('snat', '-j $float-snat')
+
+    def is_chain_empty(self, table, chain, ip_version=4, wrap=True):
+        try:
+            requested_table = {4: self.ipv4, 6: self.ipv6}[ip_version][table]
+        except KeyError:
+            return True
+        return requested_table.is_chain_empty(chain, wrap)
 
     def defer_apply_on(self):
         self.iptables_apply_deferred = True
@@ -394,7 +408,9 @@ class IptablesManager(object):
                 args = ['ip', 'netns', 'exec', self.namespace] + args
             all_tables = self.execute(args, root_helper=self.root_helper)
             all_lines = all_tables.split('\n')
-            for table_name, table in tables.iteritems():
+            # Traverse tables in sorted order for predictable dump output
+            for table_name in sorted(tables):
+                table = tables[table_name]
                 start, end = self._find_table(all_lines, table_name)
                 all_lines[start:end] = self._modify_rules(
                     all_lines[start:end], table, table_name)
@@ -457,9 +473,18 @@ class IptablesManager(object):
 
         return rules_index
 
+    def _find_last_entry(self, filter_list, match_str):
+        # find a matching entry, starting from the bottom
+        for s in reversed(filter_list):
+            s = s.strip()
+            if match_str in s:
+                return s
+
     def _modify_rules(self, current_lines, table, table_name):
-        unwrapped_chains = table.unwrapped_chains
-        chains = table.chains
+        # Chains are stored as sets to avoid duplicates.
+        # Sort the output chains here to make their order predictable.
+        unwrapped_chains = sorted(table.unwrapped_chains)
+        chains = sorted(table.chains)
         remove_chains = table.remove_chains
         rules = table.rules
         remove_rules = table.remove_rules
@@ -489,19 +514,14 @@ class IptablesManager(object):
         for chain in all_chains:
             chain_str = str(chain).strip()
 
-            orig_filter = [s for s in old_filter if chain_str in s.strip()]
-            dup_filter = [s for s in new_filter if chain_str in s.strip()]
+            old = self._find_last_entry(old_filter, chain_str)
+            if not old:
+                dup = self._find_last_entry(new_filter, chain_str)
             new_filter = [s for s in new_filter if chain_str not in s.strip()]
 
             # if no old or duplicates, use original chain
-            if orig_filter:
-                # grab the last entry, if there is one
-                old = orig_filter[-1]
-                chain_str = str(old).strip()
-            elif dup_filter:
-                # grab the last entry, if there is one
-                dup = dup_filter[-1]
-                chain_str = str(dup).strip()
+            if old or dup:
+                chain_str = str(old or dup)
             else:
                 # add-on the [packet:bytes]
                 chain_str += ' - [0:0]'
@@ -517,21 +537,17 @@ class IptablesManager(object):
             # Further down, we weed out duplicates from the bottom of the
             # list, so here we remove the dupes ahead of time.
 
-            orig_filter = [s for s in old_filter if rule_str in s.strip()]
-            dup_filter = [s for s in new_filter if rule_str in s.strip()]
+            old = self._find_last_entry(old_filter, rule_str)
+            if not old:
+                dup = self._find_last_entry(new_filter, rule_str)
             new_filter = [s for s in new_filter if rule_str not in s.strip()]
 
             # if no old or duplicates, use original rule
-            if orig_filter:
-                # grab the last entry, if there is one
-                old = orig_filter[-1]
-                rule_str = str(old).strip()
-            elif dup_filter:
-                # grab the last entry, if there is one
-                dup = dup_filter[-1]
-                rule_str = str(dup).strip()
+            if old or dup:
+                rule_str = str(old or dup)
                 # backup one index so we write the array correctly
-                rules_index -= 1
+                if not old:
+                    rules_index -= 1
             else:
                 # add-on the [packet:bytes]
                 rule_str = '[0:0] ' + rule_str
@@ -606,7 +622,7 @@ class IptablesManager(object):
             return True
 
         # We filter duplicates.  Go through the chains and rules, letting
-        # the *last* occurrence take precendence since it could have a
+        # the *last* occurrence take precedence since it could have a
         # non-zero [packet:byte] count we want to preserve.  We also filter
         # out anything in the "remove" list.
         new_filter.reverse()
@@ -629,8 +645,10 @@ class IptablesManager(object):
         cmd_tables = [('iptables', key) for key, table in self.ipv4.items()
                       if name in table._select_chain_set(wrap)]
 
-        cmd_tables += [('ip6tables', key) for key, table in self.ipv6.items()
-                       if name in table._select_chain_set(wrap)]
+        if self.use_ipv6:
+            cmd_tables += [('ip6tables', key)
+                           for key, table in self.ipv6.items()
+                           if name in table._select_chain_set(wrap)]
 
         return cmd_tables
 

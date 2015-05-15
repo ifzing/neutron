@@ -1,6 +1,4 @@
 
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 #    (c) Copyright 2013 Hewlett-Packard Development Company, L.P.
 #    All Rights Reserved.
 #
@@ -15,8 +13,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-#
-# @author: Swaminathan Vasudevan, Hewlett-Packard
 
 from neutron.db.vpn import vpn_db
 from neutron.openstack.common import log as logging
@@ -56,6 +52,9 @@ class VPNDriverPlugin(VPNPlugin, vpn_db.VPNPluginRpcDbMixin):
         #TODO(nati) get vpnservice when we support service type framework
         vpnservice = None
         return self._get_driver_for_vpnservice(vpnservice)
+
+    def _get_validator(self):
+        return self.ipsec_driver.validator
 
     def create_ipsec_site_connection(self, context, ipsec_site_connection):
         ipsec_site_connection = super(

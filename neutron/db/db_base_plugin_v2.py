@@ -14,20 +14,20 @@
 #    under the License.
 
 import random
-import weakref
 
 import netaddr
 from oslo.config import cfg
+from sqlalchemy import and_
 from sqlalchemy import event
 from sqlalchemy import orm
 from sqlalchemy.orm import exc
-from sqlalchemy import sql
 
 from neutron.api.v2 import attributes
 from neutron.common import constants
 from neutron.common import exceptions as n_exc
+from neutron.common import ipv6_utils
 from neutron import context as ctx
-from neutron.db import api as db
+from neutron.db import common_db_mixin
 from neutron.db import models_v2
 from neutron.db import sqlalchemyutils
 from neutron.extensions import l3
@@ -51,174 +51,8 @@ LOG = logging.getLogger(__name__)
 AUTO_DELETE_PORT_OWNERS = [constants.DEVICE_OWNER_DHCP]
 
 
-class CommonDbMixin(object):
-    """Common methods used in core and service plugins."""
-    # Plugins, mixin classes implementing extension will register
-    # hooks into the dict below for "augmenting" the "core way" of
-    # building a query for retrieving objects from a model class.
-    # To this aim, the register_model_query_hook and unregister_query_hook
-    # from this class should be invoked
-    _model_query_hooks = {}
-
-    # This dictionary will store methods for extending attributes of
-    # api resources. Mixins can use this dict for adding their own methods
-    # TODO(salvatore-orlando): Avoid using class-level variables
-    _dict_extend_functions = {}
-
-    @classmethod
-    def register_model_query_hook(cls, model, name, query_hook, filter_hook,
-                                  result_filters=None):
-        """Register a hook to be invoked when a query is executed.
-
-        Add the hooks to the _model_query_hooks dict. Models are the keys
-        of this dict, whereas the value is another dict mapping hook names to
-        callables performing the hook.
-        Each hook has a "query" component, used to build the query expression
-        and a "filter" component, which is used to build the filter expression.
-
-        Query hooks take as input the query being built and return a
-        transformed query expression.
-
-        Filter hooks take as input the filter expression being built and return
-        a transformed filter expression
-        """
-        model_hooks = cls._model_query_hooks.get(model)
-        if not model_hooks:
-            # add key to dict
-            model_hooks = {}
-            cls._model_query_hooks[model] = model_hooks
-        model_hooks[name] = {'query': query_hook, 'filter': filter_hook,
-                             'result_filters': result_filters}
-
-    @property
-    def safe_reference(self):
-        """Return a weakref to the instance.
-
-        Minimize the potential for the instance persisting
-        unnecessarily in memory by returning a weakref proxy that
-        won't prevent deallocation.
-        """
-        return weakref.proxy(self)
-
-    def _model_query(self, context, model):
-        query = context.session.query(model)
-        # define basic filter condition for model query
-        # NOTE(jkoelker) non-admin queries are scoped to their tenant_id
-        # NOTE(salvatore-orlando): unless the model allows for shared objects
-        query_filter = None
-        if not context.is_admin and hasattr(model, 'tenant_id'):
-            if hasattr(model, 'shared'):
-                query_filter = ((model.tenant_id == context.tenant_id) |
-                                (model.shared == sql.true()))
-            else:
-                query_filter = (model.tenant_id == context.tenant_id)
-        # Execute query hooks registered from mixins and plugins
-        for _name, hooks in self._model_query_hooks.get(model,
-                                                        {}).iteritems():
-            query_hook = hooks.get('query')
-            if isinstance(query_hook, basestring):
-                query_hook = getattr(self, query_hook, None)
-            if query_hook:
-                query = query_hook(context, model, query)
-
-            filter_hook = hooks.get('filter')
-            if isinstance(filter_hook, basestring):
-                filter_hook = getattr(self, filter_hook, None)
-            if filter_hook:
-                query_filter = filter_hook(context, model, query_filter)
-
-        # NOTE(salvatore-orlando): 'if query_filter' will try to evaluate the
-        # condition, raising an exception
-        if query_filter is not None:
-            query = query.filter(query_filter)
-        return query
-
-    def _fields(self, resource, fields):
-        if fields:
-            return dict(((key, item) for key, item in resource.items()
-                         if key in fields))
-        return resource
-
-    def _get_tenant_id_for_create(self, context, resource):
-        if context.is_admin and 'tenant_id' in resource:
-            tenant_id = resource['tenant_id']
-        elif ('tenant_id' in resource and
-              resource['tenant_id'] != context.tenant_id):
-            reason = _('Cannot create resource for another tenant')
-            raise n_exc.AdminRequired(reason=reason)
-        else:
-            tenant_id = context.tenant_id
-        return tenant_id
-
-    def _get_by_id(self, context, model, id):
-        query = self._model_query(context, model)
-        return query.filter(model.id == id).one()
-
-    def _apply_filters_to_query(self, query, model, filters):
-        if filters:
-            for key, value in filters.iteritems():
-                column = getattr(model, key, None)
-                if column:
-                    query = query.filter(column.in_(value))
-            for _name, hooks in self._model_query_hooks.get(model,
-                                                            {}).iteritems():
-                result_filter = hooks.get('result_filters', None)
-                if isinstance(result_filter, basestring):
-                    result_filter = getattr(self, result_filter, None)
-
-                if result_filter:
-                    query = result_filter(query, filters)
-        return query
-
-    def _apply_dict_extend_functions(self, resource_type,
-                                     response, db_object):
-        for func in self._dict_extend_functions.get(
-            resource_type, []):
-            args = (response, db_object)
-            if isinstance(func, basestring):
-                func = getattr(self, func, None)
-            else:
-                # must call unbound method - use self as 1st argument
-                args = (self,) + args
-            if func:
-                func(*args)
-
-    def _get_collection_query(self, context, model, filters=None,
-                              sorts=None, limit=None, marker_obj=None,
-                              page_reverse=False):
-        collection = self._model_query(context, model)
-        collection = self._apply_filters_to_query(collection, model, filters)
-        if limit and page_reverse and sorts:
-            sorts = [(s[0], not s[1]) for s in sorts]
-        collection = sqlalchemyutils.paginate_query(collection, model, limit,
-                                                    sorts,
-                                                    marker_obj=marker_obj)
-        return collection
-
-    def _get_collection(self, context, model, dict_func, filters=None,
-                        fields=None, sorts=None, limit=None, marker_obj=None,
-                        page_reverse=False):
-        query = self._get_collection_query(context, model, filters=filters,
-                                           sorts=sorts,
-                                           limit=limit,
-                                           marker_obj=marker_obj,
-                                           page_reverse=page_reverse)
-        items = [dict_func(c, fields) for c in query]
-        if limit and page_reverse:
-            items.reverse()
-        return items
-
-    def _get_collection_count(self, context, model, filters=None):
-        return self._get_collection_query(context, model, filters).count()
-
-    def _get_marker_obj(self, context, resource, limit, marker):
-        if limit and marker:
-            return getattr(self, '_get_%s' % resource)(context, marker)
-        return None
-
-
 class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
-                        CommonDbMixin):
+                        common_db_mixin.CommonDbMixin):
     """V2 Neutron plugin interface implementation using SQLAlchemy models.
 
     Whenever a non-read call happens the plugin will call an event handler
@@ -235,7 +69,6 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
     __native_sorting_support = True
 
     def __init__(self):
-        db.configure_db()
         if cfg.CONF.notify_nova_on_port_status_changes:
             from neutron.notifiers import nova
             # NOTE(arosen) These event listeners are here to hook into when
@@ -253,14 +86,6 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         cur_funcs = cls._dict_extend_functions.get(resource, [])
         cur_funcs.extend(funcs)
         cls._dict_extend_functions[resource] = cur_funcs
-
-    def _filter_non_model_columns(self, data, model):
-        """Remove all the attributes from data which are not columns of
-        the model passed as second parameter.
-        """
-        columns = [c.name for c in model.__table__.columns]
-        return dict((k, v) for (k, v) in
-                    data.iteritems() if k in columns)
 
     def _get_network(self, context, id):
         try:
@@ -352,6 +177,23 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             subnet_id=subnet_id).delete()
 
     @staticmethod
+    def _store_ip_allocation(context, ip_address, network_id, subnet_id,
+                             port_id):
+        LOG.debug("Allocated IP %(ip_address)s "
+                  "(%(network_id)s/%(subnet_id)s/%(port_id)s)",
+                  {'ip_address': ip_address,
+                   'network_id': network_id,
+                   'subnet_id': subnet_id,
+                   'port_id': port_id})
+        allocated = models_v2.IPAllocation(
+            network_id=network_id,
+            port_id=port_id,
+            ip_address=ip_address,
+            subnet_id=subnet_id
+        )
+        context.session.add(allocated)
+
+    @staticmethod
     def _generate_ip(context, subnets):
         try:
             return NeutronDbPluginV2._try_generate_ip(context, subnets)
@@ -371,31 +213,42 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             models_v2.IPAvailabilityRange).join(
                 models_v2.IPAllocationPool).with_lockmode('update')
         for subnet in subnets:
-            range = range_qry.filter_by(subnet_id=subnet['id']).first()
-            if not range:
-                LOG.debug(_("All IPs from subnet %(subnet_id)s (%(cidr)s) "
-                            "allocated"),
-                          {'subnet_id': subnet['id'], 'cidr': subnet['cidr']})
+            ip_range = range_qry.filter_by(subnet_id=subnet['id']).first()
+            if not ip_range:
+                LOG.debug("All IPs from subnet %(subnet_id)s (%(cidr)s) "
+                          "allocated",
+                          {'subnet_id': subnet['id'],
+                           'cidr': subnet['cidr']})
                 continue
-            ip_address = range['first_ip']
-            LOG.debug(_("Allocated IP - %(ip_address)s from %(first_ip)s "
-                        "to %(last_ip)s"),
-                      {'ip_address': ip_address,
-                       'first_ip': range['first_ip'],
-                       'last_ip': range['last_ip']})
-            if range['first_ip'] == range['last_ip']:
+            ip_address = ip_range['first_ip']
+            if ip_range['first_ip'] == ip_range['last_ip']:
                 # No more free indices on subnet => delete
-                LOG.debug(_("No more free IP's in slice. Deleting allocation "
-                            "pool."))
-                context.session.delete(range)
+                LOG.debug("No more free IP's in slice. Deleting "
+                          "allocation pool.")
+                context.session.delete(ip_range)
             else:
                 # increment the first free
-                range['first_ip'] = str(netaddr.IPAddress(ip_address) + 1)
-            return {'ip_address': ip_address, 'subnet_id': subnet['id']}
+                new_first_ip = str(netaddr.IPAddress(ip_address) + 1)
+                ip_range['first_ip'] = new_first_ip
+            LOG.debug("Allocated IP - %(ip_address)s from %(first_ip)s "
+                      "to %(last_ip)s",
+                      {'ip_address': ip_address,
+                       'first_ip': ip_address,
+                       'last_ip': ip_range['last_ip']})
+            return {'ip_address': ip_address,
+                    'subnet_id': subnet['id']}
         raise n_exc.IpAddressGenerationFailure(net_id=subnets[0]['network_id'])
 
     @staticmethod
     def _rebuild_availability_ranges(context, subnets):
+        """Rebuild availability ranges.
+
+        This method is called only when there's no more IP available or by
+        _update_subnet_allocation_pools. Calling
+        _update_subnet_allocation_pools before calling this function deletes
+        the IPAllocationPools associated with the subnet that is updating,
+        which will result in deleting the IPAvailabilityRange too.
+        """
         ip_qry = context.session.query(
             models_v2.IPAllocation).with_lockmode('update')
         # PostgreSQL does not support select...for update with an outer join.
@@ -414,8 +267,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
 
             for pool in pool_qry.filter_by(subnet_id=subnet['id']):
                 # Create a set of all addresses in the pool
-                poolset = netaddr.IPSet(netaddr.iter_iprange(pool['first_ip'],
-                                                             pool['last_ip']))
+                poolset = netaddr.IPSet(netaddr.IPRange(pool['first_ip'],
+                                                        pool['last_ip']))
 
                 # Use set difference to find free addresses in the pool
                 available = poolset - allocations
@@ -432,11 +285,11 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                         yield netaddr.IPRange(first, last)
 
                 # Write the ranges to the db
-                for range in ipset_to_ranges(available):
+                for ip_range in ipset_to_ranges(available):
                     available_range = models_v2.IPAvailabilityRange(
                         allocation_pool_id=pool['id'],
-                        first_ip=str(netaddr.IPAddress(range.first)),
-                        last_ip=str(netaddr.IPAddress(range.last)))
+                        first_ip=str(netaddr.IPAddress(ip_range.first)),
+                        last_ip=str(netaddr.IPAddress(ip_range.last)))
                     context.session.add(available_range)
 
     @staticmethod
@@ -447,29 +300,34 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             models_v2.IPAvailabilityRange).join(
                 models_v2.IPAllocationPool).with_lockmode('update')
         results = range_qry.filter_by(subnet_id=subnet_id)
-        for range in results:
-            first = int(netaddr.IPAddress(range['first_ip']))
-            last = int(netaddr.IPAddress(range['last_ip']))
+        for ip_range in results:
+            first = int(netaddr.IPAddress(ip_range['first_ip']))
+            last = int(netaddr.IPAddress(ip_range['last_ip']))
             if first <= ip <= last:
                 if first == last:
-                    context.session.delete(range)
+                    context.session.delete(ip_range)
                     return
                 elif first == ip:
-                    range['first_ip'] = str(netaddr.IPAddress(ip_address) + 1)
+                    new_first_ip = str(netaddr.IPAddress(ip_address) + 1)
+                    ip_range['first_ip'] = new_first_ip
                     return
                 elif last == ip:
-                    range['last_ip'] = str(netaddr.IPAddress(ip_address) - 1)
+                    new_last_ip = str(netaddr.IPAddress(ip_address) - 1)
+                    ip_range['last_ip'] = new_last_ip
                     return
                 else:
-                    # Split into two ranges
-                    new_first = str(netaddr.IPAddress(ip_address) + 1)
-                    new_last = range['last_ip']
-                    range['last_ip'] = str(netaddr.IPAddress(ip_address) - 1)
-                    ip_range = models_v2.IPAvailabilityRange(
-                        allocation_pool_id=range['allocation_pool_id'],
-                        first_ip=new_first,
-                        last_ip=new_last)
-                    context.session.add(ip_range)
+                    # Adjust the original range to end before ip_address
+                    old_last_ip = ip_range['last_ip']
+                    new_last_ip = str(netaddr.IPAddress(ip_address) - 1)
+                    ip_range['last_ip'] = new_last_ip
+
+                    # Create a new second range for after ip_address
+                    new_first_ip = str(netaddr.IPAddress(ip_address) + 1)
+                    new_ip_range = models_v2.IPAvailabilityRange(
+                        allocation_pool_id=ip_range['allocation_pool_id'],
+                        first_ip=new_first_ip,
+                        last_ip=old_last_ip)
+                    context.session.add(new_ip_range)
                     return
 
     @staticmethod
@@ -484,8 +342,16 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             return True
         return False
 
-    @staticmethod
-    def _check_subnet_ip(cidr, ip_address):
+    @classmethod
+    def _check_gateway_in_subnet(cls, cidr, gateway):
+        """Validate that the gateway is on the subnet."""
+        ip = netaddr.IPAddress(gateway)
+        if ip.version == 4 or (ip.version == 6 and not ip.is_link_local()):
+            return cls._check_subnet_ip(cidr, gateway)
+        return True
+
+    @classmethod
+    def _check_subnet_ip(cls, cidr, ip_address):
         """Validate that the IP address is on the subnet."""
         ip = netaddr.IPAddress(ip_address)
         net = netaddr.IPNetwork(cidr)
@@ -522,7 +388,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                 return True
         return False
 
-    def _test_fixed_ips_for_port(self, context, network_id, fixed_ips):
+    def _test_fixed_ips_for_port(self, context, network_id, fixed_ips,
+                                 device_owner):
         """Test fixed IPs for port.
 
         Check that configured subnets are valid prior to allocating any
@@ -542,8 +409,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                 filter = {'network_id': [network_id]}
                 subnets = self.get_subnets(context, filters=filter)
                 for subnet in subnets:
-                    if NeutronDbPluginV2._check_subnet_ip(subnet['cidr'],
-                                                          fixed['ip_address']):
+                    if self._check_subnet_ip(subnet['cidr'],
+                                             fixed['ip_address']):
                         found = True
                         subnet_id = subnet['id']
                         break
@@ -572,12 +439,21 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
 
                 # Ensure that the IP is valid on the subnet
                 if (not found and
-                    not NeutronDbPluginV2._check_subnet_ip(
-                        subnet['cidr'], fixed['ip_address'])):
+                    not self._check_subnet_ip(subnet['cidr'],
+                                              fixed['ip_address'])):
                     msg = _('IP address %s is not a valid IP for the defined '
                             'subnet') % fixed['ip_address']
                     raise n_exc.InvalidInput(error_message=msg)
-
+                if (ipv6_utils.is_auto_address_subnet(subnet) and
+                    device_owner not in
+                    (constants.DEVICE_OWNER_ROUTER_INTF,
+                     constants.DEVICE_OWNER_DVR_INTERFACE)):
+                    msg = (_("IPv6 address %(address)s can not be directly "
+                            "assigned to a port on subnet %(id)s since the "
+                            "subnet is configured for automatic addresses") %
+                           {'address': fixed['ip_address'],
+                            'id': subnet_id})
+                    raise n_exc.InvalidInput(error_message=msg)
                 fixed_ip_set.append({'subnet_id': subnet_id,
                                      'ip_address': fixed['ip_address']})
             else:
@@ -587,7 +463,7 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             raise n_exc.InvalidInput(error_message=msg)
         return fixed_ip_set
 
-    def _allocate_fixed_ips(self, context, network, fixed_ips):
+    def _allocate_fixed_ips(self, context, fixed_ips, mac_address):
         """Allocate IP addresses according to the configured fixed_ips."""
         ips = []
         for fixed in fixed_ips:
@@ -600,15 +476,24 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             # Only subnet ID is specified => need to generate IP
             # from subnet
             else:
-                subnets = [self._get_subnet(context, fixed['subnet_id'])]
-                # IP address allocation
-                result = self._generate_ip(context, subnets)
-                ips.append({'ip_address': result['ip_address'],
-                            'subnet_id': result['subnet_id']})
+                subnet = self._get_subnet(context, fixed['subnet_id'])
+                if (subnet['ip_version'] == 6 and
+                        ipv6_utils.is_auto_address_subnet(subnet)):
+                    prefix = subnet['cidr']
+                    ip_address = ipv6_utils.get_ipv6_addr_by_EUI64(
+                        prefix, mac_address)
+                    ips.append({'ip_address': ip_address.format(),
+                                'subnet_id': subnet['id']})
+                else:
+                    subnets = [subnet]
+                    # IP address allocation
+                    result = self._generate_ip(context, subnets)
+                    ips.append({'ip_address': result['ip_address'],
+                                'subnet_id': result['subnet_id']})
         return ips
 
     def _update_ips_for_port(self, context, network_id, port_id, original_ips,
-                             new_ips):
+                             new_ips, mac_address, device_owner):
         """Add or remove IPs from the port."""
         ips = []
         # These ips are still on the port and haven't been removed
@@ -629,7 +514,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                     prev_ips.append(original_ip)
 
         # Check if the IP's to add are OK
-        to_add = self._test_fixed_ips_for_port(context, network_id, new_ips)
+        to_add = self._test_fixed_ips_for_port(context, network_id, new_ips,
+                                               device_owner)
         for ip in original_ips:
             LOG.debug(_("Port update. Hold %s"), ip)
             NeutronDbPluginV2._delete_ip_allocation(context,
@@ -639,11 +525,10 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
 
         if to_add:
             LOG.debug(_("Port update. Adding %s"), to_add)
-            network = self._get_network(context, network_id)
-            ips = self._allocate_fixed_ips(context, network, to_add)
+            ips = self._allocate_fixed_ips(context, to_add, mac_address)
         return ips, prev_ips
 
-    def _allocate_ips_for_port(self, context, network, port):
+    def _allocate_ips_for_port(self, context, port):
         """Allocate IP addresses for the port.
 
         If port['fixed_ips'] is set to 'ATTR_NOT_SPECIFIED', allocate IP
@@ -657,20 +542,40 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         if fixed_configured:
             configured_ips = self._test_fixed_ips_for_port(context,
                                                            p["network_id"],
-                                                           p['fixed_ips'])
-            ips = self._allocate_fixed_ips(context, network, configured_ips)
+                                                           p['fixed_ips'],
+                                                           p['device_owner'])
+            ips = self._allocate_fixed_ips(context,
+                                           configured_ips,
+                                           p['mac_address'])
         else:
             filter = {'network_id': [p['network_id']]}
             subnets = self.get_subnets(context, filters=filter)
             # Split into v4 and v6 subnets
             v4 = []
-            v6 = []
+            v6_stateful = []
+            v6_stateless = []
             for subnet in subnets:
                 if subnet['ip_version'] == 4:
                     v4.append(subnet)
                 else:
-                    v6.append(subnet)
-            version_subnets = [v4, v6]
+                    if ipv6_utils.is_auto_address_subnet(subnet):
+                        v6_stateless.append(subnet)
+                    else:
+                        v6_stateful.append(subnet)
+
+            for subnet in v6_stateless:
+                prefix = subnet['cidr']
+                ip_address = ipv6_utils.get_ipv6_addr_by_EUI64(
+                    prefix, p['mac_address'])
+                if not self._check_unique_ip(
+                    context, p['network_id'],
+                    subnet['id'], ip_address.format()):
+                    raise n_exc.IpAddressInUse(
+                        net_id=p['network_id'],
+                        ip_address=ip_address.format())
+                ips.append({'ip_address': ip_address.format(),
+                            'subnet_id': subnet['id']})
+            version_subnets = [v4, v6_stateful]
             for subnets in version_subnets:
                 if subnets:
                     result = NeutronDbPluginV2._generate_ip(context, subnets)
@@ -686,6 +591,16 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         CIDR if overlapping IPs are disabled.
         """
         new_subnet_ipset = netaddr.IPSet([new_subnet_cidr])
+        # Disallow subnets with prefix length 0 as they will lead to
+        # dnsmasq failures (see bug 1362651).
+        # This is not a discrimination against /0 subnets.
+        # A /0 subnet is conceptually possible but hardly a practical
+        # scenario for neutron's use cases.
+        for cidr in new_subnet_ipset.iter_cidrs():
+            if cidr.prefixlen == 0:
+                err_msg = _("0 is not allowed as CIDR prefix length")
+                raise n_exc.InvalidInput(error_message=err_msg)
+
         if cfg.CONF.allow_overlapping_ips:
             subnet_list = network.subnets
         else:
@@ -821,7 +736,12 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             return
         ports = self._model_query(
             context, models_v2.Port).filter(
-                models_v2.Port.network_id == id)
+                and_(
+                    models_v2.Port.network_id == id,
+                    models_v2.Port.device_owner !=
+                    constants.DEVICE_OWNER_ROUTER_GW,
+                    models_v2.Port.device_owner !=
+                    constants.DEVICE_OWNER_FLOATINGIP))
         subnets = self._model_query(
             context, models_v2.Subnet).filter(
                 models_v2.Subnet.network_id == id)
@@ -834,24 +754,32 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             raise n_exc.InvalidSharedSetting(network=original.name)
 
     def _validate_ipv6_attributes(self, subnet, cur_subnet):
+        if cur_subnet:
+            self._validate_ipv6_update_dhcp(subnet, cur_subnet)
+            return
         ra_mode_set = attributes.is_attr_set(subnet.get('ipv6_ra_mode'))
         address_mode_set = attributes.is_attr_set(
             subnet.get('ipv6_address_mode'))
-        if cur_subnet:
-            ra_mode = (subnet['ipv6_ra_mode'] if ra_mode_set
-                       else cur_subnet['ipv6_ra_mode'])
-            addr_mode = (subnet['ipv6_address_mode'] if address_mode_set
-                         else cur_subnet['ipv6_address_mode'])
-            if ra_mode_set or address_mode_set:
-                # Check that updated subnet ipv6 attributes do not conflict
-                self._validate_ipv6_combination(ra_mode, addr_mode)
-            self._validate_ipv6_update_dhcp(subnet, cur_subnet)
-        else:
-            self._validate_ipv6_dhcp(ra_mode_set, address_mode_set,
-                                     subnet['enable_dhcp'])
-            if ra_mode_set and address_mode_set:
-                self._validate_ipv6_combination(subnet['ipv6_ra_mode'],
-                                                subnet['ipv6_address_mode'])
+        self._validate_ipv6_dhcp(ra_mode_set, address_mode_set,
+                                 subnet['enable_dhcp'])
+        if ra_mode_set and address_mode_set:
+            self._validate_ipv6_combination(subnet['ipv6_ra_mode'],
+                                            subnet['ipv6_address_mode'])
+        if address_mode_set or ra_mode_set:
+            self._validate_eui64_applicable(subnet)
+
+    def _validate_eui64_applicable(self, subnet):
+        # Per RFC 4862, section 5.5.3, prefix length and interface
+        # id together should be equal to 128. Currently neutron supports
+        # EUI64 interface id only, thus limiting the prefix
+        # length to be 64 only.
+        if ipv6_utils.is_auto_address_subnet(subnet):
+            if netaddr.IPNetwork(subnet['cidr']).prefixlen != 64:
+                msg = _('Invalid CIDR %s for IPv6 address mode. '
+                        'OpenStack uses the EUI-64 address format, '
+                        'which requires the prefix to be /64.')
+                raise n_exc.InvalidInput(
+                    error_message=(msg % subnet['cidr']))
 
     def _validate_ipv6_combination(self, ra_mode, address_mode):
         if ra_mode != address_mode:
@@ -924,6 +852,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                                for route in subnet['routes']],
                'shared': subnet['shared']
                }
+        # Call auxiliary extend functions, if any
+        self._apply_dict_extend_functions(attributes.SUBNETS, res, subnet)
         return self._fields(res, fields)
 
     def _make_port_dict(self, port, fields=None,
@@ -1078,8 +1008,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         if attributes.is_attr_set(s.get('gateway_ip')):
             self._validate_ip_version(ip_ver, s['gateway_ip'], 'gateway_ip')
             if (cfg.CONF.force_gateway_on_subnet and
-                not NeutronDbPluginV2._check_subnet_ip(s['cidr'],
-                                                       s['gateway_ip'])):
+                not self._check_gateway_in_subnet(
+                    s['cidr'], s['gateway_ip'])):
                 error_message = _("Gateway is not valid on subnet")
                 raise n_exc.InvalidInput(error_message=error_message)
             # Ensure the gateway IP is not assigned to any port
@@ -1213,6 +1143,73 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
 
         return self._make_subnet_dict(subnet)
 
+    def _update_subnet_dns_nameservers(self, context, id, s):
+        old_dns_list = self._get_dns_by_subnet(context, id)
+        new_dns_addr_set = set(s["dns_nameservers"])
+        old_dns_addr_set = set([dns['address']
+                                for dns in old_dns_list])
+
+        new_dns = list(new_dns_addr_set)
+        for dns_addr in old_dns_addr_set - new_dns_addr_set:
+            for dns in old_dns_list:
+                if dns['address'] == dns_addr:
+                    context.session.delete(dns)
+        for dns_addr in new_dns_addr_set - old_dns_addr_set:
+            dns = models_v2.DNSNameServer(
+                address=dns_addr,
+                subnet_id=id)
+            context.session.add(dns)
+        del s["dns_nameservers"]
+        return new_dns
+
+    def _update_subnet_host_routes(self, context, id, s):
+
+        def _combine(ht):
+            return ht['destination'] + "_" + ht['nexthop']
+
+        old_route_list = self._get_route_by_subnet(context, id)
+
+        new_route_set = set([_combine(route)
+                             for route in s['host_routes']])
+
+        old_route_set = set([_combine(route)
+                             for route in old_route_list])
+
+        for route_str in old_route_set - new_route_set:
+            for route in old_route_list:
+                if _combine(route) == route_str:
+                    context.session.delete(route)
+        for route_str in new_route_set - old_route_set:
+            route = models_v2.SubnetRoute(
+                destination=route_str.partition("_")[0],
+                nexthop=route_str.partition("_")[2],
+                subnet_id=id)
+            context.session.add(route)
+
+        # Gather host routes for result
+        new_routes = []
+        for route_str in new_route_set:
+            new_routes.append(
+                {'destination': route_str.partition("_")[0],
+                 'nexthop': route_str.partition("_")[2]})
+        del s["host_routes"]
+        return new_routes
+
+    def _update_subnet_allocation_pools(self, context, id, s):
+        context.session.query(models_v2.IPAllocationPool).filter_by(
+            subnet_id=id).delete()
+        new_pools = [models_v2.IPAllocationPool(
+            first_ip=p['start'], last_ip=p['end'],
+            subnet_id=id) for p in s['allocation_pools']]
+        context.session.add_all(new_pools)
+        NeutronDbPluginV2._rebuild_availability_ranges(context, [s])
+        #Gather new pools for result:
+        result_pools = [{'start': pool['start'],
+                         'end': pool['end']}
+                        for pool in s['allocation_pools']]
+        del s['allocation_pools']
+        return result_pools
+
     def update_subnet(self, context, id, subnet):
         """Update the subnet with new info.
 
@@ -1222,6 +1219,7 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         s = subnet['subnet']
         changed_host_routes = False
         changed_dns = False
+        changed_allocation_pools = False
         db_subnet = self._get_subnet(context, id)
         # Fill 'ip_version' and 'allocation_pools' fields with the current
         # value since _validate_subnet() expects subnet spec has 'ip_version'
@@ -1239,55 +1237,18 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         with context.session.begin(subtransactions=True):
             if "dns_nameservers" in s:
                 changed_dns = True
-                old_dns_list = self._get_dns_by_subnet(context, id)
-                new_dns_addr_set = set(s["dns_nameservers"])
-                old_dns_addr_set = set([dns['address']
-                                        for dns in old_dns_list])
-
-                new_dns = list(new_dns_addr_set)
-                for dns_addr in old_dns_addr_set - new_dns_addr_set:
-                    for dns in old_dns_list:
-                        if dns['address'] == dns_addr:
-                            context.session.delete(dns)
-                for dns_addr in new_dns_addr_set - old_dns_addr_set:
-                    dns = models_v2.DNSNameServer(
-                        address=dns_addr,
-                        subnet_id=id)
-                    context.session.add(dns)
-                del s["dns_nameservers"]
-
-            def _combine(ht):
-                return ht['destination'] + "_" + ht['nexthop']
+                new_dns = self._update_subnet_dns_nameservers(context, id, s)
 
             if "host_routes" in s:
                 changed_host_routes = True
-                old_route_list = self._get_route_by_subnet(context, id)
+                new_routes = self._update_subnet_host_routes(context, id, s)
 
-                new_route_set = set([_combine(route)
-                                     for route in s['host_routes']])
-
-                old_route_set = set([_combine(route)
-                                     for route in old_route_list])
-
-                for route_str in old_route_set - new_route_set:
-                    for route in old_route_list:
-                        if _combine(route) == route_str:
-                            context.session.delete(route)
-                for route_str in new_route_set - old_route_set:
-                    route = models_v2.SubnetRoute(
-                        destination=route_str.partition("_")[0],
-                        nexthop=route_str.partition("_")[2],
-                        subnet_id=id)
-                    context.session.add(route)
-
-                # Gather host routes for result
-                new_routes = []
-                for route_str in new_route_set:
-                    new_routes.append(
-                        {'destination': route_str.partition("_")[0],
-                         'nexthop': route_str.partition("_")[2]})
-                del s["host_routes"]
-
+            if "allocation_pools" in s:
+                self._validate_allocation_pools(s['allocation_pools'],
+                                                s['cidr'])
+                changed_allocation_pools = True
+                new_pools = self._update_subnet_allocation_pools(context,
+                                                                 id, s)
             subnet = self._get_subnet(context, id)
             subnet.update(s)
         result = self._make_subnet_dict(subnet)
@@ -1296,6 +1257,8 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             result['dns_nameservers'] = new_dns
         if changed_host_routes:
             result['host_routes'] = new_routes
+        if changed_allocation_pools:
+            result['allocation_pools'] = new_pools
         return result
 
     def delete_subnet(self, context, id):
@@ -1308,9 +1271,13 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                          filter_by(network_id=subnet['network_id']).
                          with_lockmode('update'))
 
-            # remove network owned ports
+            # Remove network owned ports, and delete IP allocations
+            # for IPv6 addresses which were automatically generated
+            # via SLAAC
+            is_auto_addr_subnet = ipv6_utils.is_auto_address_subnet(subnet)
             for a in allocated:
-                if a.ports.device_owner in AUTO_DELETE_PORT_OWNERS:
+                if (is_auto_addr_subnet or
+                    a.ports.device_owner in AUTO_DELETE_PORT_OWNERS):
                     NeutronDbPluginV2._delete_ip_allocation(
                         context, subnet.network_id, id, a.ip_address)
                 else:
@@ -1345,7 +1312,6 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         p = port['port']
         port_id = p.get('id') or uuidutils.generate_uuid()
         network_id = p['network_id']
-        mac_address = p['mac_address']
         # NOTE(jkoelker) Get the tenant_id outside of the session to avoid
         #                unneeded db action if the operation raises
         tenant_id = self._get_tenant_id_for_create(context, p)
@@ -1354,65 +1320,57 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                                                                     tenant_id)
 
         with context.session.begin(subtransactions=True):
-            network = self._get_network(context, network_id)
+            # Ensure that the network exists.
+            self._get_network(context, network_id)
 
             # Ensure that a MAC address is defined and it is unique on the
             # network
-            if mac_address is attributes.ATTR_NOT_SPECIFIED:
-                mac_address = NeutronDbPluginV2._generate_mac(context,
-                                                              network_id)
+            if p['mac_address'] is attributes.ATTR_NOT_SPECIFIED:
+                #Note(scollins) Add the generated mac_address to the port,
+                #since _allocate_ips_for_port will need the mac when
+                #calculating an EUI-64 address for a v6 subnet
+                p['mac_address'] = NeutronDbPluginV2._generate_mac(context,
+                                                                   network_id)
             else:
                 # Ensure that the mac on the network is unique
                 if not NeutronDbPluginV2._check_unique_mac(context,
                                                            network_id,
-                                                           mac_address):
+                                                           p['mac_address']):
                     raise n_exc.MacAddressInUse(net_id=network_id,
-                                                mac=mac_address)
-
-            # Returns the IP's for the port
-            ips = self._allocate_ips_for_port(context, network, port)
+                                                mac=p['mac_address'])
 
             if 'status' not in p:
                 status = constants.PORT_STATUS_ACTIVE
             else:
                 status = p['status']
 
-            port = models_v2.Port(tenant_id=tenant_id,
-                                  name=p['name'],
-                                  id=port_id,
-                                  network_id=network_id,
-                                  mac_address=mac_address,
-                                  admin_state_up=p['admin_state_up'],
-                                  status=status,
-                                  device_id=p['device_id'],
-                                  device_owner=p['device_owner'])
-            context.session.add(port)
+            db_port = models_v2.Port(tenant_id=tenant_id,
+                                     name=p['name'],
+                                     id=port_id,
+                                     network_id=network_id,
+                                     mac_address=p['mac_address'],
+                                     admin_state_up=p['admin_state_up'],
+                                     status=status,
+                                     device_id=p['device_id'],
+                                     device_owner=p['device_owner'])
+            context.session.add(db_port)
 
-            # Update the allocated IP's
+            # Update the IP's for the port
+            ips = self._allocate_ips_for_port(context, port)
             if ips:
                 for ip in ips:
                     ip_address = ip['ip_address']
                     subnet_id = ip['subnet_id']
-                    LOG.debug(_("Allocated IP %(ip_address)s "
-                                "(%(network_id)s/%(subnet_id)s/%(port_id)s)"),
-                              {'ip_address': ip_address,
-                               'network_id': network_id,
-                               'subnet_id': subnet_id,
-                               'port_id': port_id})
-                    allocated = models_v2.IPAllocation(
-                        network_id=network_id,
-                        port_id=port_id,
-                        ip_address=ip_address,
-                        subnet_id=subnet_id,
-                    )
-                    context.session.add(allocated)
+                    NeutronDbPluginV2._store_ip_allocation(
+                        context, ip_address, network_id, subnet_id, port_id)
 
-        return self._make_port_dict(port, process_extensions=False)
+        return self._make_port_dict(db_port, process_extensions=False)
 
     def update_port(self, context, id, port):
         p = port['port']
 
         changed_ips = False
+        changed_device_id = False
         with context.session.begin(subtransactions=True):
             port = self._get_port(context, id)
             if 'device_owner' in p:
@@ -1437,15 +1395,15 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                 changed_ips = True
                 original = self._make_port_dict(port, process_extensions=False)
                 added_ips, prev_ips = self._update_ips_for_port(
-                    context, port["network_id"], id, original["fixed_ips"],
-                    p['fixed_ips'])
+                    context, port["network_id"], id,
+                    original["fixed_ips"], p['fixed_ips'],
+                    original['mac_address'], port['device_owner'])
 
                 # Update ips if necessary
                 for ip in added_ips:
-                    allocated = models_v2.IPAllocation(
-                        network_id=port['network_id'], port_id=port.id,
-                        ip_address=ip['ip_address'], subnet_id=ip['subnet_id'])
-                    context.session.add(allocated)
+                    NeutronDbPluginV2._store_ip_allocation(
+                        context, ip['ip_address'], port['network_id'],
+                        ip['subnet_id'], port.id)
             # Remove all attributes in p which are not in the port DB model
             # and then update the port
             port.update(self._filter_non_model_columns(p, models_v2.Port))

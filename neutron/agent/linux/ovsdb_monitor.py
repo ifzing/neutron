@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 Red Hat, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -92,9 +90,9 @@ class SimpleInterfaceMonitor(OvsdbMonitor):
     def start(self, block=False, timeout=5):
         super(SimpleInterfaceMonitor, self).start()
         if block:
-            eventlet.timeout.Timeout(timeout)
-            while not self.is_active:
-                eventlet.sleep()
+            with eventlet.timeout.Timeout(timeout):
+                while not self.is_active:
+                    eventlet.sleep()
 
     def _kill(self, *args, **kwargs):
         self.data_received = False

@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
 # Copyright 2012, Nachi Ueno, NTT MCL, Inc.
 # All Rights Reserved.
 #
@@ -38,10 +36,7 @@ class RyuSecurityGroupsTestCase(test_sg.SecurityGroupDBTestCase):
     def setUp(self, plugin=None):
         test_sg_rpc.set_firewall_driver(test_sg_rpc.FIREWALL_HYBRID_DRIVER)
         self.fake_ryu = fake_ryu.patch_fake_ryu_client().start()
-        notifier_p = mock.patch(NOTIFIER)
-        notifier_cls = notifier_p.start()
-        self.notifier = mock.Mock()
-        notifier_cls.return_value = self.notifier
+        self.notifier = mock.patch(NOTIFIER).start().return_value
         self._attribute_map_bk_ = {}
         for item in attributes.RESOURCE_ATTRIBUTE_MAP:
             self._attribute_map_bk_[item] = (attributes.
@@ -76,7 +71,7 @@ class TestRyuSecurityGroups(RyuSecurityGroupsTestCase,
                                        req.get_response(self.api))
                 port_id = res['port']['id']
                 plugin = manager.NeutronManager.get_plugin()
-                port_dict = plugin.callbacks.get_port_from_device(port_id)
+                port_dict = plugin.get_port_from_device(port_id)
                 self.assertEqual(port_id, port_dict['id'])
                 self.assertEqual([security_group_id],
                                  port_dict[ext_sg.SECURITYGROUPS])
@@ -87,7 +82,7 @@ class TestRyuSecurityGroups(RyuSecurityGroupsTestCase,
 
     def test_security_group_get_port_from_device_with_no_port(self):
         plugin = manager.NeutronManager.get_plugin()
-        port_dict = plugin.callbacks.get_port_from_device('bad_device_id')
+        port_dict = plugin.get_port_from_device('bad_device_id')
         self.assertIsNone(port_dict)
 
 

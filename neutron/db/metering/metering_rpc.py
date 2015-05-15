@@ -1,7 +1,5 @@
 # Copyright (C) 2014 eNovance SAS <licensing@enovance.com>
 #
-# Author: Sylvain Afchain <sylvain.afchain@enovance.com>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -15,7 +13,6 @@
 # under the License.
 
 from neutron.common import constants as consts
-from neutron.common import rpc as p_rpc
 from neutron.common import utils
 from neutron import manager
 from neutron.openstack.common import log as logging
@@ -30,9 +27,6 @@ class MeteringRpcCallbacks(object):
 
     def __init__(self, meter_plugin):
         self.meter_plugin = meter_plugin
-
-    def create_rpc_dispatcher(self):
-        return p_rpc.PluginRpcDispatcher([self])
 
     def get_sync_data_metering(self, context, **kwargs):
         l3_plugin = manager.NeutronManager.get_service_plugins().get(

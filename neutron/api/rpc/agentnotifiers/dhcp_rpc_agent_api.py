@@ -14,17 +14,17 @@
 # limitations under the License.
 
 from neutron.common import constants
+from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
 from neutron import manager
 from neutron.openstack.common import log as logging
-from neutron.openstack.common.rpc import proxy
 
 
 LOG = logging.getLogger(__name__)
 
 
-class DhcpAgentNotifyAPI(proxy.RpcProxy):
+class DhcpAgentNotifyAPI(n_rpc.RpcProxy):
     """API for plugin to notify DHCP agent."""
     BASE_RPC_API_VERSION = '1.0'
     # It seems dhcp agent does not support bulk operation
@@ -95,6 +95,9 @@ class DhcpAgentNotifyAPI(proxy.RpcProxy):
                              'payload': payload})
         return enabled_agents
 
+    def _is_reserved_dhcp_port(self, port):
+        return port.get('device_id') == constants.DEVICE_ID_RESERVED_DHCP_PORT
+
     def _notify_agents(self, context, method, payload, network_id):
         """Notify all the agents that are hosting the network."""
         # fanout is required as we do not know who is "listening"
@@ -115,7 +118,9 @@ class DhcpAgentNotifyAPI(proxy.RpcProxy):
                 context, [network_id])
 
             # schedule the network first, if needed
-            schedule_required = method == 'port_create_end'
+            schedule_required = (
+                method == 'port_create_end' and
+                not self._is_reserved_dhcp_port(payload['port']))
             if schedule_required:
                 agents = self._schedule_network(admin_ctx, network, agents)
 

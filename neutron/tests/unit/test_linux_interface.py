@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2012 OpenStack Foundation
 # All Rights Reserved.
 #
@@ -129,15 +127,20 @@ class TestABCDriver(TestBase):
                           dynamic=False,
                           cidr='2001:db8:a::123/64')]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
+        self.ip_dev().route.list_onlink_routes.return_value = []
+
         bc = BaseChild(self.conf)
         ns = '12345678-1234-5678-90ab-ba0987654321'
-        bc.init_l3('tap0', ['2001:db8:a::124/64'], namespace=ns)
+        bc.init_l3('tap0', ['2001:db8:a::124/64'], namespace=ns,
+                   extra_subnets=[{'cidr': '2001:db8:b::/64'}])
         self.ip_dev.assert_has_calls(
             [mock.call('tap0', 'sudo', namespace=ns),
              mock.call().addr.list(scope='global', filters=['permanent']),
              mock.call().addr.add(6, '2001:db8:a::124/64',
                                   '2001:db8:a:0:ffff:ffff:ffff:ffff'),
-             mock.call().addr.delete(6, '2001:db8:a::123/64')])
+             mock.call().addr.delete(6, '2001:db8:a::123/64'),
+             mock.call().route.list_onlink_routes(),
+             mock.call().route.add_onlink_route('2001:db8:b::/64')])
 
     def test_l3_init_with_duplicated_ipv6(self):
         addresses = [dict(ip_version=6,
@@ -396,7 +399,7 @@ class TestBridgeInterfaceDriver(TestBase):
                     'port-1234',
                     'tap0',
                     'aa:bb:cc:dd:ee:ff')
-            self.ip_dev.assert_has_calls([])
+            self.assertFalse(self.ip_dev.called)
             self.assertEqual(log.call_count, 1)
 
     def test_plug_mtu(self):
@@ -451,6 +454,7 @@ class TestMetaInterfaceDriver(TestBase):
             'meta_flavor_driver_mappings',
             'fake1:neutron.agent.linux.interface.OVSInterfaceDriver,'
             'fake2:neutron.agent.linux.interface.BridgeInterfaceDriver')
+        self.conf.set_override('endpoint_type', 'internalURL')
 
     def test_get_driver_by_network_id(self):
         meta_interface = interface.MetaInterfaceDriver(self.conf)
